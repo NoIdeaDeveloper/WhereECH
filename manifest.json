@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "whereECH",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Privacy-respecting indicator showing whether the current site advertises Encrypted Client Hello (ECH) via its DNS HTTPS record.",
   "permissions": ["tabs", "webNavigation", "storage"],
   "host_permissions": [

@@ -64,14 +64,6 @@ function sendMessage(msg) {
   });
 }
 
-function formatDate(ms) {
-  try {
-    return new Date(ms).toLocaleString();
-  } catch {
-    return "";
-  }
-}
-
 // Asks the service worker for the current decrypted history list and
 // renders it. Every value below is written with .textContent, so even
 // if a hostname somehow contained HTML-like characters (it can't —
@@ -98,22 +90,22 @@ async function refreshHistory() {
     const li = document.createElement("li");
     li.className = "history-item";
 
-    const info = document.createElement("div");
-    info.className = "history-info";
-
-    const host = document.createElement("div");
-    host.className = "history-host";
-    host.textContent = e.host;
-    host.title = e.host;
-
-    const meta = document.createElement("div");
-    meta.className = "history-meta";
-    const hits = e.hits ? `${e.hits} visit${e.hits === 1 ? "" : "s"}` : "";
-    const last = e.lastSeen ? `last seen ${formatDate(e.lastSeen)}` : "";
-    meta.textContent = [hits, last].filter(Boolean).join(" · ");
-
-    info.appendChild(host);
-    info.appendChild(meta);
+    // Each entry is rendered as a plain hyperlink to the site's HTTPS
+    // root. The href is set via the DOM URL API, not string concat, so
+    // the hostname cannot introduce a different scheme or inject
+    // anything into the link target. Link text uses .textContent, so
+    // no HTML interpretation is possible regardless of hostname.
+    const link = document.createElement("a");
+    try {
+      link.href = new URL(`https://${e.host}/`).toString();
+    } catch {
+      link.href = "#";
+    }
+    link.textContent = e.host;
+    link.title = e.host;
+    link.className = "history-host";
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
 
     const btn = document.createElement("button");
     btn.type = "button";
@@ -130,7 +122,7 @@ async function refreshHistory() {
       }
     });
 
-    li.appendChild(info);
+    li.appendChild(link);
     li.appendChild(btn);
     list.appendChild(li);
   }

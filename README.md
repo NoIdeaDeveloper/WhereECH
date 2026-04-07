@@ -54,6 +54,7 @@ If you enable the history feature, WhereECH keeps a list of hostnames it has obs
 
 - **Opt-in.** The feature is off by default. Nothing is recorded until you turn it on in Settings.
 - **Positive only.** Only sites that successfully advertise or negotiate ECH are recorded. Sites without ECH, failed lookups, and skipped URLs leave no trace.
+- **Minimal data.** Each entry is ONLY the hostname. No visit counts, no timestamps, no status — just the name, rendered as a clickable link in Settings.
 - **Local only.** The list lives on your device, in this extension's own storage area. It is never uploaded, synced, or shared.
 - **Encrypted at rest.** Entries are stored as an AES-GCM-256 ciphertext blob. The encryption key is a non-extractable `CryptoKey` held in the extension's IndexedDB: the browser itself refuses to let any JavaScript — including this extension — read the raw key bytes. The key can only be *used* via the WebCrypto API.
 - **Under your control.** Settings lets you review the list, remove individual entries, or wipe the whole thing. Clearing the list also destroys and regenerates the encryption key, so any leftover copy of the old ciphertext (in disk snapshots, for example) becomes permanently undecryptable.

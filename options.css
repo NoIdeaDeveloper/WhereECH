@@ -270,19 +270,18 @@ button.danger:hover { background: rgba(185,28,28,.08); }
   border-bottom: 1px solid var(--border);
 }
 .history-item:last-child { border-bottom: 0; }
-.history-info { min-width: 0; flex: 1; }
-.history-host {
+a.history-host {
+  flex: 1;
+  min-width: 0;
   font: 13px ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
   color: var(--fg);
+  text-decoration: none;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.history-meta {
-  font-size: 11px;
-  color: var(--fg-muted);
-  margin-top: 2px;
-}
+a.history-host:hover { color: var(--green); text-decoration: underline; }
+a.history-host:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; border-radius: 4px; }
 button.ghost-small {
   font-size: 12px;
   padding: 5px 10px;

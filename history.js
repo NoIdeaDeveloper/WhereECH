@@ -211,8 +211,7 @@ function isPlausibleHost(host) {
   return /^[a-z0-9.\-[\]:]+$/i.test(host);
 }
 
-// Add a hostname to the encrypted history, or update its lastSeen /
-// hits counter if it's already there.
+// Add a hostname to the encrypted history.
 //
 // Trust boundary: this function is only reachable from background.js
 // AND only when the user has set keepHistory=true AND only when a DoH
@@ -222,36 +221,41 @@ function isPlausibleHost(host) {
 // The function performs NO network I/O. It touches only:
 //   * chrome.storage.local[historyBlob] (read + write encrypted bytes)
 //   * The in-memory CryptoKey obtained from IDB (use-only, not export)
-export function recordEchHost(host, status) {
+//
+// What we store per entry: ONLY the hostname. No visit count, no
+// first-seen / last-seen timestamps, no status — just the bare name.
+// Keeping the record minimal means there is less for anything to leak
+// and less for a reviewer to worry about. The list is kept in
+// insertion order, with re-encountered hosts moved to the end so the
+// MAX_ENTRIES cap drops the least-recently-seen hosts first.
+export function recordEchHost(host) {
   return withLock(async () => {
     if (!isPlausibleHost(host)) return;
     const { entries } = await loadEntriesRaw();
-    const now = Date.now();
-    const existing = entries.find((e) => e.host === host);
-    if (existing) {
-      existing.lastSeen = now;
-      existing.hits = (existing.hits || 1) + 1;
-      if (status) existing.status = status;
-    } else {
-      entries.push({ host, firstSeen: now, lastSeen: now, hits: 1, status: status || "advertised" });
-      if (entries.length > MAX_ENTRIES) {
-        entries.sort((a, b) => b.lastSeen - a.lastSeen);
-        entries.length = MAX_ENTRIES;
-      }
-    }
-    await saveEntries(entries);
+    // Drop any existing copy, then re-append so this host becomes the
+    // most-recent entry. This gives us move-to-end LRU semantics
+    // without having to store a timestamp.
+    const next = entries.filter((e) => e.host !== host);
+    next.push({ host });
+    // Cap the list. We drop from the front (oldest), which is
+    // least-recently-seen under the move-to-end rule above.
+    while (next.length > MAX_ENTRIES) next.shift();
+    await saveEntries(next);
   });
 }
 
-// Decrypts the blob and returns a sorted copy of the entries so the
-// options page can display them. The decrypted plaintext only ever
-// lives in memory inside the service-worker process, and only for the
-// duration of this function call plus the structured-clone trip across
-// the chrome.runtime message channel to the options page.
+// Decrypts the blob and returns a copy of the entries for the options
+// page to display. Order is newest-first. The decrypted plaintext only
+// ever lives in memory inside the service-worker process, and only for
+// the duration of this function call plus the structured-clone trip
+// across the chrome.runtime message channel to the options page.
 export function listEchHosts() {
   return withLock(async () => {
     const { entries } = await loadEntriesRaw();
-    return entries.slice().sort((a, b) => b.lastSeen - a.lastSeen);
+    // Normalize: tolerate older blobs that may contain extra fields
+    // (firstSeen/lastSeen/hits/status from pre-1.1.1 installs) by
+    // projecting to just the hostname on the way out.
+    return entries.slice().reverse().map((e) => ({ host: e.host }));
   });
 }
 

@@ -315,7 +315,8 @@ async function evaluateHost(host, { force = false } = {}) {
     (result.status === STATUS.ADVERTISED || result.status === STATUS.CONFIRMED)
   ) {
     // Fire-and-forget; history failures must never break the main flow.
-    recordEchHost(host, result.status).catch(() => {});
+    // Only the hostname is handed off — no timestamps, no status.
+    recordEchHost(host).catch(() => {});
   }
 
   return result;
