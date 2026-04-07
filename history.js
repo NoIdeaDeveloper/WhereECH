@@ -97,17 +97,16 @@ async function encryptJson(obj) {
   return { v: 1, iv: b64enc(iv), ct: b64enc(ct) };
 }
 
+// Returns the decoded JSON on success, or throws on failure. Callers that
+// encounter an undecryptable blob MUST NOT silently overwrite it — that would
+// erase data the user might still be able to recover.
 async function decryptJson(blob) {
-  if (!blob || !blob.iv || !blob.ct) return null;
-  try {
-    const key = await getOrCreateKey();
-    const iv = b64dec(blob.iv);
-    const ct = b64dec(blob.ct);
-    const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
-    return JSON.parse(new TextDecoder().decode(pt));
-  } catch {
-    return null;
-  }
+  if (!blob || !blob.iv || !blob.ct) throw new Error("history blob malformed");
+  const key = await getOrCreateKey();
+  const iv = b64dec(blob.iv);
+  const ct = b64dec(blob.ct);
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+  return JSON.parse(new TextDecoder().decode(pt));
 }
 
 // Serialize read-modify-write operations so concurrent add/remove/clear can
@@ -119,12 +118,17 @@ function withLock(fn) {
   return next;
 }
 
+// Returns { entries, present } where `present` is true iff a blob existed.
+// If a blob exists but cannot be decrypted, throws — callers must decide
+// whether to surface the error to the user or refuse to write.
 async function loadEntriesRaw() {
   const { [STORAGE_BLOB]: blob } = await chrome.storage.local.get(STORAGE_BLOB);
-  if (!blob) return [];
+  if (!blob) return { entries: [], present: false };
   const data = await decryptJson(blob);
-  if (!data || !Array.isArray(data.entries)) return [];
-  return data.entries;
+  if (!data || !Array.isArray(data.entries)) {
+    throw new Error("history blob has unexpected shape");
+  }
+  return { entries: data.entries, present: true };
 }
 
 async function saveEntries(entries) {
@@ -132,10 +136,20 @@ async function saveEntries(entries) {
   await chrome.storage.local.set({ [STORAGE_BLOB]: blob });
 }
 
+// Cheap structural sanity check on a hostname. We never interpolate this value
+// into HTML, but we still don't want arbitrary junk occupying a slot in the
+// encrypted store if some upstream bug hands us something unexpected.
+function isPlausibleHost(host) {
+  if (typeof host !== "string") return false;
+  if (host.length === 0 || host.length > 253) return false;
+  // Hostname charset per RFC 1123 plus IDNA-decoded dots. URL.hostname lowercases.
+  return /^[a-z0-9.\-[\]:]+$/i.test(host);
+}
+
 export function recordEchHost(host, status) {
   return withLock(async () => {
-    if (!host || typeof host !== "string") return;
-    const entries = await loadEntriesRaw();
+    if (!isPlausibleHost(host)) return;
+    const { entries } = await loadEntriesRaw();
     const now = Date.now();
     const existing = entries.find((e) => e.host === host);
     if (existing) {
@@ -155,14 +169,14 @@ export function recordEchHost(host, status) {
 
 export function listEchHosts() {
   return withLock(async () => {
-    const entries = await loadEntriesRaw();
+    const { entries } = await loadEntriesRaw();
     return entries.slice().sort((a, b) => b.lastSeen - a.lastSeen);
   });
 }
 
 export function removeEchHost(host) {
   return withLock(async () => {
-    const entries = await loadEntriesRaw();
+    const { entries } = await loadEntriesRaw();
     const next = entries.filter((e) => e.host !== host);
     await saveEntries(next);
   });

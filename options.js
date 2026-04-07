@@ -151,8 +151,8 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("nextdnsId").addEventListener("change", async (e) => {
     const v = e.target.value.trim();
-    if (v && !/^[A-Za-z0-9]+$/.test(v)) {
-      toast("Profile ID should be letters and numbers only");
+    if (v && !/^[A-Za-z0-9]{1,32}$/.test(v)) {
+      toast("Profile ID should be 1–32 letters and digits");
       return;
     }
     await save({ nextdnsId: v });

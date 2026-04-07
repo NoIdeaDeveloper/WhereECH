@@ -58,18 +58,28 @@ function shouldSkipUrl(url) {
 }
 
 function resolverUrl(settings) {
+  let raw;
   if (settings.resolver === "custom" && settings.customResolver) {
-    return settings.customResolver;
-  }
-  if (settings.resolver === "nextdns") {
+    raw = settings.customResolver;
+  } else if (settings.resolver === "nextdns") {
     const id = (settings.nextdnsId || "").trim();
     if (!id) throw new Error("NextDNS profile ID is not set — open Settings.");
     if (!/^[A-Za-z0-9]{1,32}$/.test(id)) {
       throw new Error("NextDNS profile ID is invalid.");
     }
-    return `https://dns.nextdns.io/${id}`;
+    raw = `https://dns.nextdns.io/${id}`;
+  } else {
+    raw = DOH_PROVIDERS[settings.resolver] || DOH_PROVIDERS.cloudflare;
   }
-  return DOH_PROVIDERS[settings.resolver] || DOH_PROVIDERS.cloudflare;
+  // Defense in depth: whatever came out of settings MUST be a real https URL.
+  // Options-page validation is only advisory; the service worker is the last
+  // line of defense before a cleartext lookup could leak a hostname.
+  let parsed;
+  try { parsed = new URL(raw); } catch { throw new Error("Resolver URL is not a valid URL."); }
+  if (parsed.protocol !== "https:") {
+    throw new Error("Resolver URL must use HTTPS.");
+  }
+  return parsed.toString();
 }
 
 async function dohLookupHttpsRR(host, settings) {

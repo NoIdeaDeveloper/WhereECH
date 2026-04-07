@@ -18,7 +18,7 @@ function parseWire(data) {
   const hex = m[1].replace(/\s+/g, "");
   if (hex.length % 2 !== 0) return null;
   const b = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < b.length; i++) b[i] = parseInt(hex.substr(i * 2, 2), 16);
+  for (let i = 0; i < b.length; i++) b[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
   if (b.length < 3) return null;
 
   const out = emptySummary((b[0] << 8) | b[1]);
