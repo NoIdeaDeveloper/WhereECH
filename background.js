@@ -2,6 +2,12 @@
 // Privacy-respecting Encrypted Client Hello detector.
 
 import { parseHttpsRr } from "./ech.js";
+import {
+  recordEchHost,
+  listEchHosts,
+  removeEchHost,
+  clearEchHistory,
+} from "./history.js";
 
 const SUCCESS_TTL_MS = 10 * 60 * 1000;
 const FAILURE_TTL_MS = 30 * 1000;
@@ -26,6 +32,7 @@ const DEFAULTS = {
   nextdnsId: "",
   autoLookup: true,
   traceProbe: false,
+  keepHistory: false,
 };
 
 const cache = new Map(); // host -> result
@@ -160,6 +167,15 @@ async function evaluateHost(host, { force = false } = {}) {
   }
 
   cache.set(host, result);
+
+  if (
+    settings.keepHistory &&
+    (result.status === STATUS.ADVERTISED || result.status === STATUS.CONFIRMED)
+  ) {
+    // Fire-and-forget; history failures must never break the main flow.
+    recordEchHost(host, result.status).catch(() => {});
+  }
+
   return result;
 }
 
@@ -236,6 +252,21 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
       if (msg && msg.type === "clearCache") {
         cache.clear();
+        sendResponse({ ok: true });
+        return;
+      }
+      if (msg && msg.type === "listHistory") {
+        const entries = await listEchHosts();
+        sendResponse({ ok: true, entries });
+        return;
+      }
+      if (msg && msg.type === "removeHistory") {
+        await removeEchHost(msg.host);
+        sendResponse({ ok: true });
+        return;
+      }
+      if (msg && msg.type === "clearHistory") {
+        await clearEchHistory();
         sendResponse({ ok: true });
         return;
       }

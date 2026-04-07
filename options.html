@@ -84,6 +84,39 @@
     </section>
 
     <section class="card">
+      <h2>ECH site history <span class="badge">optional</span></h2>
+      <p class="hint">
+        When enabled, WhereECH keeps a private list of sites it has seen advertising or using
+        Encrypted Client Hello. Nothing about sites without ECH is recorded, and no list is kept
+        at all unless you turn this on.
+      </p>
+      <p class="hint">
+        <strong>How it's protected.</strong> The list is encrypted with AES-GCM using a 256-bit key
+        that is generated on your device and stored as a <em>non-extractable</em> CryptoKey in this
+        extension's IndexedDB. The key cannot be read by any JavaScript — it can only be used via
+        the browser's WebCrypto API. Only this extension's origin can see it. The encrypted list
+        itself lives in extension storage; anyone reading the raw profile files sees only opaque
+        ciphertext. Clearing the list also rotates the key so old ciphertext becomes permanently
+        undecryptable.
+      </p>
+      <p class="hint">
+        <strong>Caveat.</strong> This protects against casual disk inspection and other extensions,
+        not against someone who can run arbitrary code as you in your browser profile — they could
+        ask the extension to decrypt on their behalf.
+      </p>
+      <label class="opt">
+        <input type="checkbox" id="keepHistory">
+        Remember sites that support ECH
+      </label>
+      <div class="history-controls">
+        <button id="refreshHistory" type="button">Refresh</button>
+        <button id="clearHistory" type="button" class="danger">Clear entire list</button>
+      </div>
+      <ul id="historyList" class="history-list" aria-live="polite"></ul>
+      <p id="historyEmpty" class="hint history-empty">No entries yet.</p>
+    </section>
+
+    <section class="card">
       <h2>Cache</h2>
       <p class="hint">
         WhereECH remembers each site's result for 10 minutes (30 seconds for failed lookups) so it
