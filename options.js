@@ -106,6 +106,26 @@ async function refreshHistory() {
   }
 }
 
+// Ensure host permission is in place for whatever custom resolver URL is
+// currently saved. Called when switching to the custom radio so an upgraded
+// install whose saved URL predates this check gets prompted, not silently
+// broken. No-op if no URL is saved or permission is already granted.
+async function ensureCustomResolverPermission() {
+  const v = ($("customResolver").value || "").trim();
+  if (!v) return;
+  let parsed;
+  try { parsed = new URL(v); } catch { return; }
+  if (parsed.protocol !== "https:") return;
+  const origin = `${parsed.protocol}//${parsed.host}/*`;
+  // request() is idempotent: it returns true immediately without prompting
+  // if the permission is already held. We avoid an intermediate `contains`
+  // await that could burn the user-gesture needed to show the prompt.
+  const granted = await chrome.permissions.request({ origins: [origin] }).catch(() => false);
+  if (!granted) {
+    toast("Permission denied — lookups to that host will fail");
+  }
+}
+
 async function updatePermStatus() {
   const has = await chrome.permissions.contains(TRACE_ORIGINS).catch(() => false);
   const el = $("permStatus");
@@ -138,13 +158,37 @@ document.addEventListener("DOMContentLoaded", () => {
       const value = r.value;
       $("customResolver").disabled = value !== "custom";
       $("nextdnsId").disabled = value !== "nextdns";
+      if (value === "custom") {
+        await ensureCustomResolverPermission();
+      }
       await save({ resolver: value });
     });
   }
   $("customResolver").addEventListener("change", async (e) => {
     const v = e.target.value.trim();
-    if (v && !/^https:\/\//i.test(v)) {
+    if (!v) {
+      await save({ customResolver: "" });
+      return;
+    }
+    let parsed;
+    try { parsed = new URL(v); } catch {
+      toast("Resolver URL is invalid");
+      return;
+    }
+    if (parsed.protocol !== "https:") {
       toast("Resolver must be HTTPS");
+      return;
+    }
+    // MV3 requires host permission for cross-origin fetch from the service
+    // worker. Without this, lookups against a custom resolver would silently
+    // fail. optional_host_permissions: ["https://*/*"] lets us request any
+    // https origin as a subset.
+    const origin = `${parsed.protocol}//${parsed.host}/*`;
+    const granted = await chrome.permissions.request({ origins: [origin] }).catch(() => false);
+    if (!granted) {
+      toast("Permission for that host was denied");
+      e.target.value = "";
+      await save({ customResolver: "" });
       return;
     }
     await save({ customResolver: v });
