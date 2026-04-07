@@ -33,7 +33,7 @@ const STATUS_LABEL = {
 
 const NOTES = {
   confirmed: "Your browser negotiated Encrypted Client Hello with this site. The hostname you visited (the SNI) was hidden from anyone watching the network — only your DNS resolver and the site itself know what you connected to.",
-  advertised: "This site publishes an ECH key in DNS, so a modern Brave with ECH enabled will use it automatically. WhereECH can't see inside your actual TLS handshake, so it can't 100% confirm ECH was used — enable the Cloudflare trace probe in Settings for proof on Cloudflare-hosted sites.",
+  advertised: "This site publishes an ECH key in DNS, so a browser that supports ECH will use it automatically on the TLS handshake. WhereECH can't see inside your actual handshake, so it can't 100% confirm ECH was used — enable the Cloudflare trace probe in Settings for proof on Cloudflare-hosted sites.",
   not_advertised: "This site does not publish an ECH key in DNS. Your browser sent the hostname (SNI) in the clear during the TLS handshake, where any on-path observer could read it. The traffic itself is still encrypted.",
   unknown: "WhereECH couldn't reach the DNS-over-HTTPS resolver. Check your network connection, or pick a different resolver in Settings.",
   skipped: "WhereECH only inspects regular HTTPS websites. Browser pages, local files, and IP-literal addresses don't apply.",

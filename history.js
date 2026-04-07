@@ -14,8 +14,9 @@
 //     "Remember sites that support ECH" in Settings.
 //   * It never records a hostname that did NOT successfully advertise or
 //     use ECH — there is no list of sites-without-ECH.
-//   * It does not record URLs, paths, query strings, timestamps-of-visit
-//     beyond a coarse first/last-seen marker, or any page content.
+//   * It does not record URLs, paths, query strings, timestamps of any
+//     kind, visit counts, or any page content. Each entry is ONLY the
+//     hostname — a bare string — and nothing else.
 //   * It does not share this data with the popup, with the active tab,
 //     with any content script, or with any network endpoint. The only
 //     callers are the background service worker (to write) and the
@@ -62,8 +63,13 @@ const IDB_KEY_ID = "master";
 // else; only the ciphertext of the full serialized list sits here.
 const STORAGE_BLOB = "historyBlob";
 // Hard cap so even a heavy user can't grow the encrypted blob without
-// bound. Past this count, oldest-lastSeen entries are dropped first.
+// bound. Past this count, the least-recently-seen entries are dropped
+// first (see move-to-end LRU semantics in recordEchHost below).
 const MAX_ENTRIES = 5000;
+// Format version for the encrypted blob envelope. Bumping this lets
+// future code recognize and migrate (or refuse) older layouts instead
+// of silently misparsing them.
+const BLOB_VERSION = 1;
 
 function idbOpen() {
   return new Promise((resolve, reject) => {
@@ -159,14 +165,19 @@ async function encryptJson(obj) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const pt = new TextEncoder().encode(JSON.stringify(obj));
   const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, pt));
-  return { v: 1, iv: b64enc(iv), ct: b64enc(ct) };
+  return { v: BLOB_VERSION, iv: b64enc(iv), ct: b64enc(ct) };
 }
 
 // Returns the decoded JSON on success, or throws on failure. Callers that
 // encounter an undecryptable blob MUST NOT silently overwrite it — that would
-// erase data the user might still be able to recover.
+// erase data the user might still be able to recover. We check the envelope
+// version tag explicitly so a future format change can't be silently
+// misparsed by old code; unknown versions throw rather than guess.
 async function decryptJson(blob) {
   if (!blob || !blob.iv || !blob.ct) throw new Error("history blob malformed");
+  if (blob.v !== BLOB_VERSION) {
+    throw new Error(`history blob version ${blob.v} is not supported`);
+  }
   const key = await getOrCreateKey();
   const iv = b64dec(blob.iv);
   const ct = b64dec(blob.ct);
@@ -197,7 +208,7 @@ async function loadEntriesRaw() {
 }
 
 async function saveEntries(entries) {
-  const blob = await encryptJson({ v: 1, entries });
+  const blob = await encryptJson({ v: BLOB_VERSION, entries });
   await chrome.storage.local.set({ [STORAGE_BLOB]: blob });
 }
 

@@ -79,8 +79,30 @@ const DEFAULTS = {
 // In-memory only. Lives inside this service worker and is wiped whenever
 // the browser restarts the worker (which happens frequently). Nothing in
 // this Map is ever written to disk. It exists purely to coalesce repeated
-// lookups of the same host during one browsing session.
+// lookups of the same host during one browsing session. A hard size cap
+// prevents unbounded growth on long-lived workers: insertion order + a
+// move-to-end on hit gives cheap LRU eviction.
+const CACHE_MAX = 500;
 const cache = new Map(); // host -> result
+
+function cacheGet(host) {
+  const v = cache.get(host);
+  if (v === undefined) return undefined;
+  // Move to end to mark as most-recently-used.
+  cache.delete(host);
+  cache.set(host, v);
+  return v;
+}
+
+function cacheSet(host, value) {
+  if (cache.has(host)) cache.delete(host);
+  cache.set(host, value);
+  while (cache.size > CACHE_MAX) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
 
 // Lets us correlate an async lookup that finishes late with the tab it
 // started in, so we don't paint a stale badge on a tab that has since
@@ -238,7 +260,35 @@ async function probeCloudflareTrace(host) {
       redirect: "error",
     });
     if (!res.ok) return null;
-    const text = await res.text();
+    // Cloudflare's real /cdn-cgi/trace response is a few hundred bytes.
+    // Cap what we'll read so a misbehaving (or compromised) host can't
+    // make us buffer an unbounded response into memory. We stream the
+    // body and bail the moment we exceed the cap.
+    const MAX_BYTES = 4096;
+    const reader = res.body && res.body.getReader ? res.body.getReader() : null;
+    let text;
+    if (reader) {
+      const chunks = [];
+      let total = 0;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > MAX_BYTES) {
+          try { await reader.cancel(); } catch {}
+          return null;
+        }
+        chunks.push(value);
+      }
+      const merged = new Uint8Array(total);
+      let off = 0;
+      for (const c of chunks) { merged.set(c, off); off += c.byteLength; }
+      text = new TextDecoder().decode(merged);
+    } else {
+      text = await res.text();
+      if (text.length > MAX_BYTES) return null;
+    }
     const m = text.match(/^sni=(.*)$/m);
     return m ? m[1].trim() : null;
   } catch {
@@ -264,7 +314,7 @@ async function probeCloudflareTrace(host) {
 // on an explicit opt-in you control from Settings. Non-ECH sites and
 // inconclusive lookups are never recorded in history.
 async function evaluateHost(host, { force = false } = {}) {
-  const cached = cache.get(host);
+  const cached = cacheGet(host);
   if (!force && cached) {
     const ttl = cached.error ? FAILURE_TTL_MS : SUCCESS_TTL_MS;
     if (Date.now() - cached.ts < ttl) return cached;
@@ -308,7 +358,7 @@ async function evaluateHost(host, { force = false } = {}) {
     }
   }
 
-  cache.set(host, result);
+  cacheSet(host, result);
 
   if (
     settings.keepHistory &&
