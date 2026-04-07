@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>WhereECH — Settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <div class="title-row">
+      <div class="brand-mark">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 2 4 5v6c0 5 3.5 9 8 11 4.5-2 8-6 8-11V5l-8-3Z"/>
+        </svg>
+      </div>
+      <h1>WhereECH</h1>
+    </div>
+    <p class="subtitle">Settings &amp; privacy</p>
+    <p class="lede">
+      <strong>Encrypted Client Hello (ECH)</strong> hides the hostname you're visiting from anyone
+      watching the network during the TLS handshake. Without ECH, even though the page contents are
+      encrypted, the site name leaks in the clear. WhereECH tells you which sites support ECH by
+      looking up their DNS records.
+    </p>
+    <p class="lede">
+      WhereECH sends <strong>no telemetry, analytics, or browsing data</strong> anywhere — only
+      the DNS lookups you configure below.
+    </p>
+
+    <section class="card">
+      <h2>DNS resolver</h2>
+      <p class="hint">
+        To check if a site supports ECH, WhereECH asks a DNS-over-HTTPS provider for that site's
+        HTTPS record. Each lookup reveals one hostname (the site you're visiting) to whichever
+        provider you pick — so choose one you trust with your browsing history.
+      </p>
+      <label class="opt"><input type="radio" name="resolver" value="cloudflare"> Cloudflare <span class="muted">— fast, large, US-based (1.1.1.1)</span></label>
+      <label class="opt"><input type="radio" name="resolver" value="quad9"> Quad9 <span class="muted">— Swiss non-profit, blocks known malicious domains</span></label>
+      <label class="opt"><input type="radio" name="resolver" value="controld"> Control D <span class="muted">— privacy-focused, no logs (free unfiltered tier)</span></label>
+      <label class="opt"><input type="radio" name="resolver" value="nextdns"> NextDNS <span class="muted">— uses your personal profile</span></label>
+      <p class="hint">
+        Enter your NextDNS profile ID (the short code shown in your NextDNS dashboard, e.g. <code>abc123</code>).
+        Lookups will be answered by your own NextDNS configuration, including any filters you've enabled.
+      </p>
+      <input type="text" id="nextdnsId" placeholder="profile ID, e.g. abc123" autocomplete="off" spellcheck="false" disabled>
+      <label class="opt"><input type="radio" name="resolver" value="custom"> Custom — your own DoH endpoint</label>
+      <input type="url" id="customResolver" placeholder="https://your-resolver.example/dns-query" disabled>
+      <p class="hint">Custom resolvers must be HTTPS and speak the JSON DoH protocol (the same format Cloudflare and NextDNS use).</p>
+    </section>
+
+    <section class="card">
+      <h2>When to check</h2>
+      <label class="opt">
+        <input type="checkbox" id="autoLookup">
+        Check every site automatically
+        <div class="hint">
+          On: WhereECH looks up each site you visit and shows the result on its toolbar badge —
+          green for ECH, gray for none. Convenient, but every page you visit triggers one DNS query
+          to your chosen resolver.<br>
+          Off (most private): WhereECH only looks up a site when you click the toolbar icon. The
+          badge stays neutral until you ask.
+        </div>
+      </label>
+    </section>
+
+    <section class="card">
+      <h2>Confirm with Cloudflare <span class="badge">optional</span></h2>
+      <p class="hint">
+        DNS only tells us a site <em>offers</em> ECH — not whether your specific connection actually
+        used it. Cloudflare runs a special endpoint at <code>/cdn-cgi/trace</code> that reports
+        whether the connection it just received from your browser used ECH. Enabling this lets
+        WhereECH verify ECH was really used, but only on Cloudflare-hosted sites.
+      </p>
+      <p class="hint">
+        Cost: one extra request per page to the site you're visiting. Requires permission to read
+        responses from any host (you'll be prompted).
+      </p>
+      <label class="opt">
+        <input type="checkbox" id="traceProbe">
+        Enable Cloudflare trace confirmation
+      </label>
+      <div id="permStatus" class="hint"></div>
+    </section>
+
+    <section class="card">
+      <h2>Cache</h2>
+      <p class="hint">
+        WhereECH remembers each site's result for 10 minutes (30 seconds for failed lookups) so it
+        doesn't repeat the same DNS query. The cache lives only in memory and is wiped when the
+        browser restarts.
+      </p>
+      <button id="clearCache" type="button">Clear cache now</button>
+    </section>
+
+    <p id="saved" class="saved" aria-live="polite"></p>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>

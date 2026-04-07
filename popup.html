@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main id="app" aria-live="polite">
+    <header class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 2 4 5v6c0 5 3.5 9 8 11 4.5-2 8-6 8-11V5l-8-3Z"/>
+      </svg>
+      <span class="brand-name">WhereECH</span>
+      <button id="open-options" type="button" class="icon-btn" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/>
+        </svg>
+      </button>
+    </header>
+
+    <section class="hero" id="hero" data-state="unknown">
+      <div class="host" id="host" title="">…</div>
+      <div class="pill" id="pill">
+        <span class="pill-dot" aria-hidden="true"></span>
+        <span class="pill-label" id="status-label">Checking</span>
+      </div>
+    </section>
+
+    <p class="note" id="note"></p>
+
+    <section class="card" id="info-card">
+      <div class="row" id="resolver-row" title="Which DNS-over-HTTPS provider answered the lookup">
+        <span class="k">DNS resolver</span><span class="v" id="resolver-v">—</span>
+      </div>
+      <div class="row hidden" id="ech-row" title="Size of the ECH public key the site published in DNS">
+        <span class="k">ECH key size</span><span class="v" id="ech-v">—</span>
+      </div>
+      <div class="row hidden" id="alpn-row" title="Application protocols the site offers (e.g. HTTP/2, HTTP/3)">
+        <span class="k">Protocols</span><span class="v" id="alpn-v">—</span>
+      </div>
+      <div class="row hidden" id="ipv4-row" title="IPv4 address hints from the HTTPS DNS record">
+        <span class="k">IPv4 hints</span><span class="v" id="ipv4-v">—</span>
+      </div>
+      <div class="row hidden" id="ipv6-row" title="IPv6 address hints from the HTTPS DNS record">
+        <span class="k">IPv6 hints</span><span class="v" id="ipv6-v">—</span>
+      </div>
+      <div class="row hidden" id="sni-row" title="Result from Cloudflare's /cdn-cgi/trace endpoint">
+        <span class="k">Cloudflare says</span><span class="v" id="sni-v">—</span>
+      </div>
+      <div class="row hidden" id="error-row">
+        <span class="k">Error</span><span class="v" id="error-v">—</span>
+      </div>
+    </section>
+
+    <details class="raw">
+      <summary>
+        <span>Show raw DNS record</span>
+        <svg class="chev" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+      </summary>
+      <pre id="rr"></pre>
+      <button class="ghost small" id="copy-rr" type="button">Copy</button>
+    </details>
+
+    <footer class="actions">
+      <button id="recheck" type="button" class="primary">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="23 4 23 10 17 10"/>
+          <path d="M20.5 15a9 9 0 1 1-2.1-9.4L23 10"/>
+        </svg>
+        Re-check
+      </button>
+    </footer>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
