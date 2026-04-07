@@ -1,3 +1,28 @@
+// WhereECH — Settings page controller.
+//
+// What this file does:
+//   * Renders the Settings UI.
+//   * Reads your current preferences from chrome.storage.local and
+//     writes them back when you change one.
+//   * When you enable the Cloudflare trace probe or set a custom DoH
+//     resolver, it asks the browser for the extra host permission that
+//     feature needs, via the browser's own permission prompt. You can
+//     always say no.
+//   * Sends messages to the background service worker to list, remove,
+//     or clear the encrypted history.
+//
+// What this file does NOT do:
+//   * No network I/O whatsoever. It never calls fetch().
+//   * No access to the encryption key. The key lives in the service
+//     worker's IndexedDB; this page can only ask the worker for the
+//     decrypted list via chrome.runtime.sendMessage, which Chrome
+//     restricts to intra-extension senders.
+//   * No dynamic HTML. Every value rendered on this page is written
+//     with .textContent, which does not interpret HTML. There is no
+//     innerHTML, no eval, no script-src beyond 'self' (see manifest).
+//   * No telemetry, no analytics, no external fonts, no remote images.
+//     The page loads only the local CSS file listed in options.html.
+
 const DEFAULTS = {
   resolver: "cloudflare",
   customResolver: "",
@@ -47,6 +72,11 @@ function formatDate(ms) {
   }
 }
 
+// Asks the service worker for the current decrypted history list and
+// renders it. Every value below is written with .textContent, so even
+// if a hostname somehow contained HTML-like characters (it can't —
+// URL.hostname is already normalized upstream), there is no way for
+// this function to introduce a script-injection vector.
 async function refreshHistory() {
   const list = $("historyList");
   const empty = $("historyEmpty");
@@ -106,6 +136,26 @@ async function refreshHistory() {
   }
 }
 
+// Ensure host permission is in place for whatever custom resolver URL is
+// currently saved. Called when switching to the custom radio so an upgraded
+// install whose saved URL predates this check gets prompted, not silently
+// broken. No-op if no URL is saved or permission is already granted.
+async function ensureCustomResolverPermission() {
+  const v = ($("customResolver").value || "").trim();
+  if (!v) return;
+  let parsed;
+  try { parsed = new URL(v); } catch { return; }
+  if (parsed.protocol !== "https:") return;
+  const origin = `${parsed.protocol}//${parsed.host}/*`;
+  // request() is idempotent: it returns true immediately without prompting
+  // if the permission is already held. We avoid an intermediate `contains`
+  // await that could burn the user-gesture needed to show the prompt.
+  const granted = await chrome.permissions.request({ origins: [origin] }).catch(() => false);
+  if (!granted) {
+    toast("Permission denied — lookups to that host will fail");
+  }
+}
+
 async function updatePermStatus() {
   const has = await chrome.permissions.contains(TRACE_ORIGINS).catch(() => false);
   const el = $("permStatus");
@@ -138,21 +188,45 @@ document.addEventListener("DOMContentLoaded", () => {
       const value = r.value;
       $("customResolver").disabled = value !== "custom";
       $("nextdnsId").disabled = value !== "nextdns";
+      if (value === "custom") {
+        await ensureCustomResolverPermission();
+      }
       await save({ resolver: value });
     });
   }
   $("customResolver").addEventListener("change", async (e) => {
     const v = e.target.value.trim();
-    if (v && !/^https:\/\//i.test(v)) {
+    if (!v) {
+      await save({ customResolver: "" });
+      return;
+    }
+    let parsed;
+    try { parsed = new URL(v); } catch {
+      toast("Resolver URL is invalid");
+      return;
+    }
+    if (parsed.protocol !== "https:") {
       toast("Resolver must be HTTPS");
+      return;
+    }
+    // MV3 requires host permission for cross-origin fetch from the service
+    // worker. Without this, lookups against a custom resolver would silently
+    // fail. optional_host_permissions: ["https://*/*"] lets us request any
+    // https origin as a subset.
+    const origin = `${parsed.protocol}//${parsed.host}/*`;
+    const granted = await chrome.permissions.request({ origins: [origin] }).catch(() => false);
+    if (!granted) {
+      toast("Permission for that host was denied");
+      e.target.value = "";
+      await save({ customResolver: "" });
       return;
     }
     await save({ customResolver: v });
   });
   $("nextdnsId").addEventListener("change", async (e) => {
     const v = e.target.value.trim();
-    if (v && !/^[A-Za-z0-9]+$/.test(v)) {
-      toast("Profile ID should be letters and numbers only");
+    if (v && !/^[A-Za-z0-9]{1,32}$/.test(v)) {
+      toast("Profile ID should be 1–32 letters and digits");
       return;
     }
     await save({ nextdnsId: v });
