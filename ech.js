@@ -1,5 +1,26 @@
 // HTTPS Resource Record (RFC 9460) parser.
 //
+// What this file is:
+//   A pure, self-contained parser. It takes a string (the DNS record
+//   data that came back from the DoH resolver) and returns a structured
+//   summary. That's it.
+//
+// What this file does NOT do:
+//   * No network I/O. It never makes a fetch, XHR, or WebSocket call.
+//   * No storage access. It does not touch chrome.storage, IndexedDB,
+//     localStorage, cookies, or anything else persistent.
+//   * No access to tabs, URLs, the DOM, or any other browser data.
+//   * No use of eval, Function, innerHTML, or any dynamic code path.
+//   * No regex or string operation that can reach outside the input
+//     string it was handed.
+//
+// The only inputs this code ever sees are strings that background.js
+// already fetched from your chosen DoH resolver. Worst case for this
+// file is a malformed input, for which all code paths return null or
+// a partial object — there are no unbounded loops, all byte reads are
+// length-checked, and DNS compression pointers are explicitly refused
+// to prevent any chance of walking outside the buffer.
+//
 // Cloudflare DoH JSON returns rdata for type=65 in one of two forms:
 //   1. Generic wire format:  `\# 64 0001000001000C0268330268310003...`
 //   2. Presentation format:  `1 . alpn="h3,h2" ipv4hint=1.2.3.4 ech="AEX+..."`

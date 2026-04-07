@@ -1,3 +1,26 @@
+// WhereECH — toolbar popup UI.
+//
+// What this file does:
+//   * When you click the toolbar icon, it asks the background service
+//     worker for the ECH status of the current tab's hostname and
+//     displays the result.
+//   * It renders the result into the popup DOM using textContent only.
+//
+// What this file does NOT do:
+//   * No network I/O. It never calls fetch(). Any lookup that happens
+//     as a side-effect of opening the popup happens inside the service
+//     worker, which does it subject to ALL the privacy rules documented
+//     in background.js.
+//   * No storage access. It does not read or write chrome.storage,
+//     IndexedDB, cookies, localStorage, or any other persistent state.
+//   * No access to the page you're visiting. The popup can only read
+//     the active tab's URL via the service worker; it cannot run
+//     scripts in the page, read its DOM, or see its cookies.
+//   * No dynamic HTML. Every value on the popup is set with .textContent.
+//     There is no innerHTML, no eval, no inline scripts (blocked by CSP).
+//   * No access to the encrypted history — the popup does not even
+//     have the message types to list or read it.
+
 // Popup UI: queries the service worker, renders results with safe DOM APIs only.
 
 const STATUS_LABEL = {

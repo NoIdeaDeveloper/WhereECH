@@ -1,5 +1,36 @@
-// WhereECH service worker
-// Privacy-respecting Encrypted Client Hello detector.
+// WhereECH service worker — the only part of the extension that touches the
+// network or persistent storage.
+//
+// What this file does:
+//   * Watches top-frame navigations (via chrome.webNavigation) so it can
+//     identify the hostname of the page you just loaded.
+//   * Sends ONE DNS-over-HTTPS query per hostname to the resolver you chose
+//     in Settings, asking for that hostname's HTTPS resource record (RFC
+//     9460). That record is public DNS data — anyone can look it up.
+//   * Parses the record to see whether it advertises an ECH key, and sets
+//     the toolbar badge accordingly.
+//
+// What this file does NOT do:
+//   * It does not read, record, or transmit the URL path, query string,
+//     cookies, form data, request/response bodies, or anything else about
+//     the page beyond the hostname.
+//   * It does not read from other tabs, inject content scripts, open
+//     connections to any host except the DoH resolver you picked (and the
+//     visited site itself, only if you explicitly enabled the Cloudflare
+//     trace probe in Settings).
+//   * It does not contact any analytics, telemetry, logging, update, or
+//     crash-report endpoint. There is no "phone home".
+//   * It does not access browser history, bookmarks, downloads, saved
+//     passwords, or any other browser data. The manifest does not even
+//     request those permissions.
+//
+// The only permissions the manifest asks for are:
+//   tabs           — to read the active tab's URL for the popup view
+//   webNavigation  — to know when you navigate so we can refresh the badge
+//   storage        — to persist your Settings choices locally
+//   host_permissions — ONLY the four hardcoded DoH providers
+//   optional_host_permissions — https://*/*, requested ONLY if you opt into
+//                    the trace probe or set a custom resolver
 
 import { parseHttpsRr } from "./ech.js";
 import {
@@ -9,7 +40,13 @@ import {
   clearEchHistory,
 } from "./history.js";
 
+// How long a successful lookup stays in the in-memory cache. Used to avoid
+// repeating the same DoH query for a site you just visited. 10 minutes is
+// short enough to pick up real DNS changes, long enough to hide most
+// re-navigations from the resolver.
 const SUCCESS_TTL_MS = 10 * 60 * 1000;
+// Failed lookups cache much more briefly so a transient error (offline,
+// resolver hiccup) clears quickly.
 const FAILURE_TTL_MS = 30 * 1000;
 
 const STATUS = {
@@ -20,6 +57,10 @@ const STATUS = {
   SKIPPED: "skipped",
 };
 
+// The only DNS-over-HTTPS endpoints this extension can contact without
+// additional user consent. These four URLs are mirrored in manifest.json
+// under "host_permissions" — the browser itself blocks requests to any
+// other host unless the user explicitly grants extra permissions.
 const DOH_PROVIDERS = {
   cloudflare: "https://cloudflare-dns.com/dns-query",
   quad9: "https://dns.quad9.net:5053/dns-query",
@@ -35,17 +76,38 @@ const DEFAULTS = {
   keepHistory: false,
 };
 
+// In-memory only. Lives inside this service worker and is wiped whenever
+// the browser restarts the worker (which happens frequently). Nothing in
+// this Map is ever written to disk. It exists purely to coalesce repeated
+// lookups of the same host during one browsing session.
 const cache = new Map(); // host -> result
+
+// Lets us correlate an async lookup that finishes late with the tab it
+// started in, so we don't paint a stale badge on a tab that has since
+// navigated elsewhere. In-memory only, wiped with the worker.
 const tabHost = new Map(); // tabId -> host
 
+// Reads Settings from chrome.storage.local. This is the ONLY source of
+// persistent configuration the extension uses; it never syncs anywhere,
+// never leaves the device, and is scoped to this extension's own storage
+// area — other extensions and websites cannot read it.
 async function getSettings() {
   return chrome.storage.local.get(DEFAULTS); // get() with defaults already merges
 }
 
+// Detects raw IP literals so we don't do a useless DNS lookup on them.
+// ECH is a property of a name, so there's nothing to look up for an IP.
 function isIpLiteral(host) {
   return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(":");
 }
 
+// Gatekeeper: decides whether a URL is even eligible for a lookup. Any URL
+// that isn't a plain https:// site on a real hostname is dropped here —
+// chrome://, about:, file://, data:, view-source:, extension pages, raw
+// IP addresses, localhost, and anything that fails to parse all return
+// true. Nothing downstream of this function will ever be asked about a
+// URL that didn't clear this filter. The only thing we ever retain from
+// a URL that does clear it is the hostname.
 function shouldSkipUrl(url) {
   if (!url) return true;
   let u;
@@ -57,6 +119,20 @@ function shouldSkipUrl(url) {
   return false;
 }
 
+// Turns your Settings into the concrete URL we will fetch for DNS lookups.
+// This function never contacts the network by itself; it only chooses a
+// URL. The real request happens in dohLookupHttpsRR below. Three trust
+// checks live here:
+//   1. For NextDNS, the profile ID must be 1–32 alphanumeric characters.
+//      This bound prevents someone from stuffing path traversal or query
+//      strings into what's supposed to be an opaque ID.
+//   2. Whichever URL is chosen MUST parse cleanly.
+//   3. Whichever URL is chosen MUST use https:. We refuse plain http,
+//      ws, file, data, and any other scheme — because the whole point of
+//      this extension is to avoid leaking hostnames in cleartext, and a
+//      non-HTTPS DoH query would do exactly that.
+// The options page enforces HTTPS at save time, but this check runs at
+// USE time as well — the service worker refuses to trust settings blindly.
 function resolverUrl(settings) {
   let raw;
   if (settings.resolver === "custom" && settings.customResolver) {
@@ -82,6 +158,28 @@ function resolverUrl(settings) {
   return parsed.toString();
 }
 
+// Performs exactly one DNS-over-HTTPS query for a single hostname.
+//
+// What it sends:
+//   A single GET request with two query parameters: name=<the hostname>
+//   and type=HTTPS. That's it. The hostname is the only piece of user-
+//   derived data that leaves the device on this call, and it goes to
+//   exactly one host — whichever DoH provider you picked in Settings.
+//
+// What it does NOT send:
+//   * No cookies (credentials: "omit")
+//   * No Referer header (referrerPolicy: "no-referrer")
+//   * No User-Agent extras, no custom fingerprinting headers
+//   * No request body
+//   * No follow-up requests: redirects are refused (redirect: "error"),
+//     so a malicious or compromised resolver cannot bounce us to a
+//     tracking URL on another domain.
+//
+// Failure-mode guarantees:
+//   * A 5-second AbortController timeout prevents hung requests from
+//     leaking resources.
+//   * HTTP errors throw and are converted upstream into a neutral
+//     "unknown" status — no data is logged, nothing is retried.
 async function dohLookupHttpsRR(host, settings) {
   // Build URL safely so a custom resolver with an existing query string still works.
   const url = new URL(resolverUrl(settings));
@@ -108,6 +206,25 @@ async function dohLookupHttpsRR(host, settings) {
   }
 }
 
+// OPTIONAL feature — disabled by default. Only runs if you explicitly
+// enable "Confirm with Cloudflare" in Settings AND you grant the extra
+// host permission it asks for at that time.
+//
+// What it does: fetches a single URL (https://<host>/cdn-cgi/trace) on
+// the site you just visited. That endpoint is a well-known, documented
+// Cloudflare feature that simply reports metadata about the connection
+// you just made — including whether your browser used ECH on the TLS
+// handshake. The response is a few hundred bytes of key=value lines.
+//
+// What it does NOT do: it sends no cookies, no referrer, and refuses
+// redirects. It reads ONLY the `sni=` line from the response; everything
+// else is discarded. It is never called for a host that is not the one
+// you're currently visiting, so it does not generate any traffic you
+// weren't already making to that site.
+//
+// Why it exists: a DNS lookup can only tell us whether a site *offers*
+// ECH. It can't tell us whether your browser actually negotiated it.
+// The trace endpoint closes that loop for Cloudflare-hosted sites.
 async function probeCloudflareTrace(host) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 3000);
@@ -131,6 +248,21 @@ async function probeCloudflareTrace(host) {
   }
 }
 
+// The main pipeline: takes a hostname, returns its ECH status.
+//
+// Flow:
+//   1. Serve from in-memory cache if fresh (no network at all).
+//   2. Otherwise, ONE DoH query to the resolver you chose.
+//   3. Parse the DNS response locally (see ech.js).
+//   4. Optionally, if you opted into the trace probe, make ONE extra
+//      request to the visited site itself to confirm.
+//   5. Cache the result in memory and, ONLY if you opted into history
+//      AND the site actually supports ECH, hand the hostname off to the
+//      encrypted history store.
+//
+// Nothing in this function writes to disk except step 5, which is gated
+// on an explicit opt-in you control from Settings. Non-ECH sites and
+// inconclusive lookups are never recorded in history.
 async function evaluateHost(host, { force = false } = {}) {
   const cached = cache.get(host);
   if (!force && cached) {
@@ -208,6 +340,13 @@ async function setBadge(tabId, status) {
   } catch {}
 }
 
+// Called exactly once per top-frame navigation. This is where a page
+// visit turns into (at most) one DoH query. If auto-lookup is off in
+// Settings, we stop here without touching the network — the badge goes
+// neutral and nothing happens until you explicitly click the popup.
+//
+// Subframes (iframes, ads, trackers embedded in a page) never reach
+// this function; the caller below filters on frameId === 0.
 async function handleNavigation(tabId, url) {
   if (shouldSkipUrl(url)) {
     tabHost.delete(tabId);
@@ -238,13 +377,24 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
+// We subscribe ONLY to top-frame navigations (frameId === 0). Iframes,
+// background requests, subresource loads, prefetches, and service-worker
+// fetches all pass by untouched. The extension only ever sees the URL of
+// the main page you're looking at — not ad trackers embedded in it.
 chrome.webNavigation.onCommitted.addListener((details) => {
   if (details.frameId !== 0) return;
   handleNavigation(details.tabId, details.url);
 });
 
+// Clean up per-tab state when a tab closes. Nothing persistent lives in
+// tabHost, so this is just housekeeping for the in-memory Map.
 chrome.tabs.onRemoved.addListener((tabId) => tabHost.delete(tabId));
 
+// Message handler for the popup and options pages. Chrome restricts
+// chrome.runtime.onMessage to intra-extension senders by default (this
+// extension does NOT declare externally_connectable), so no website and
+// no other extension can invoke any of these actions. Every message
+// name is handled explicitly — anything unrecognized returns an error.
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     try {

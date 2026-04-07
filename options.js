@@ -1,3 +1,28 @@
+// WhereECH — Settings page controller.
+//
+// What this file does:
+//   * Renders the Settings UI.
+//   * Reads your current preferences from chrome.storage.local and
+//     writes them back when you change one.
+//   * When you enable the Cloudflare trace probe or set a custom DoH
+//     resolver, it asks the browser for the extra host permission that
+//     feature needs, via the browser's own permission prompt. You can
+//     always say no.
+//   * Sends messages to the background service worker to list, remove,
+//     or clear the encrypted history.
+//
+// What this file does NOT do:
+//   * No network I/O whatsoever. It never calls fetch().
+//   * No access to the encryption key. The key lives in the service
+//     worker's IndexedDB; this page can only ask the worker for the
+//     decrypted list via chrome.runtime.sendMessage, which Chrome
+//     restricts to intra-extension senders.
+//   * No dynamic HTML. Every value rendered on this page is written
+//     with .textContent, which does not interpret HTML. There is no
+//     innerHTML, no eval, no script-src beyond 'self' (see manifest).
+//   * No telemetry, no analytics, no external fonts, no remote images.
+//     The page loads only the local CSS file listed in options.html.
+
 const DEFAULTS = {
   resolver: "cloudflare",
   customResolver: "",
@@ -47,6 +72,11 @@ function formatDate(ms) {
   }
 }
 
+// Asks the service worker for the current decrypted history list and
+// renders it. Every value below is written with .textContent, so even
+// if a hostname somehow contained HTML-like characters (it can't —
+// URL.hostname is already normalized upstream), there is no way for
+// this function to introduce a script-injection vector.
 async function refreshHistory() {
   const list = $("historyList");
   const empty = $("historyEmpty");
