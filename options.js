@@ -4,6 +4,7 @@ const DEFAULTS = {
   nextdnsId: "",
   autoLookup: true,
   traceProbe: false,
+  keepHistory: false,
 };
 
 const TRACE_ORIGINS = { origins: ["https://*/*"] };
@@ -21,7 +22,88 @@ async function load() {
   $("nextdnsId").disabled = s.resolver !== "nextdns";
   $("autoLookup").checked = !!s.autoLookup;
   $("traceProbe").checked = !!s.traceProbe;
+  $("keepHistory").checked = !!s.keepHistory;
   await updatePermStatus();
+  await refreshHistory();
+}
+
+function sendMessage(msg) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(msg, (resp) => {
+      if (chrome.runtime.lastError) {
+        resolve({ ok: false, error: chrome.runtime.lastError.message });
+      } else {
+        resolve(resp || { ok: false, error: "no response" });
+      }
+    });
+  });
+}
+
+function formatDate(ms) {
+  try {
+    return new Date(ms).toLocaleString();
+  } catch {
+    return "";
+  }
+}
+
+async function refreshHistory() {
+  const list = $("historyList");
+  const empty = $("historyEmpty");
+  list.textContent = "";
+  const resp = await sendMessage({ type: "listHistory" });
+  if (!resp.ok) {
+    empty.textContent = "Couldn't load history: " + (resp.error || "unknown error");
+    empty.classList.remove("hidden");
+    return;
+  }
+  const entries = resp.entries || [];
+  if (entries.length === 0) {
+    empty.textContent = "No entries yet.";
+    empty.classList.remove("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+  for (const e of entries) {
+    const li = document.createElement("li");
+    li.className = "history-item";
+
+    const info = document.createElement("div");
+    info.className = "history-info";
+
+    const host = document.createElement("div");
+    host.className = "history-host";
+    host.textContent = e.host;
+    host.title = e.host;
+
+    const meta = document.createElement("div");
+    meta.className = "history-meta";
+    const hits = e.hits ? `${e.hits} visit${e.hits === 1 ? "" : "s"}` : "";
+    const last = e.lastSeen ? `last seen ${formatDate(e.lastSeen)}` : "";
+    meta.textContent = [hits, last].filter(Boolean).join(" · ");
+
+    info.appendChild(host);
+    info.appendChild(meta);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ghost-small";
+    btn.textContent = "Remove";
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      const r = await sendMessage({ type: "removeHistory", host: e.host });
+      if (r.ok) {
+        await refreshHistory();
+      } else {
+        btn.disabled = false;
+        toast("Couldn't remove entry");
+      }
+    });
+
+    li.appendChild(info);
+    li.appendChild(btn);
+    list.appendChild(li);
+  }
 }
 
 async function updatePermStatus() {
@@ -91,6 +173,20 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     await save({ traceProbe: e.target.checked });
     await updatePermStatus();
+  });
+  $("keepHistory").addEventListener("change", async (e) => {
+    await save({ keepHistory: e.target.checked });
+  });
+  $("refreshHistory").addEventListener("click", () => { refreshHistory(); });
+  $("clearHistory").addEventListener("click", async () => {
+    if (!confirm("Clear the entire ECH site history? This cannot be undone.")) return;
+    const r = await sendMessage({ type: "clearHistory" });
+    if (r.ok) {
+      toast("History cleared");
+      await refreshHistory();
+    } else {
+      toast("Couldn't clear history");
+    }
   });
   $("clearCache").addEventListener("click", () => {
     chrome.runtime.sendMessage({ type: "clearCache" }, () => {
