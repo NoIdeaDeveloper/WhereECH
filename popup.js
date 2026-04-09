@@ -83,6 +83,7 @@ function render(resp) {
 
   const s = r.summary || {};
   setRow("ech-row", "ech-v", s.echLength ? `${s.echLength} bytes` : null);
+  setRow("echname-row", "echname-v", s.echPublicName || null);
   setRow("alpn-row", "alpn-v", s.alpn);
   setRow("ipv4-row", "ipv4-v", s.ipv4);
   setRow("ipv6-row", "ipv6-v", s.ipv6);
