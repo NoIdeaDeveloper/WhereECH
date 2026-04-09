@@ -25,12 +25,93 @@
 //   1. Generic wire format:  `\# 64 0001000001000C0268330268310003...`
 //   2. Presentation format:  `1 . alpn="h3,h2" ipv4hint=1.2.3.4 ech="AEX+..."`
 // We handle both and return a single uniform shape:
-//   { priority, alpn[], port|null, ipv4[], ipv6[], echLength|null }
+//   { priority, alpn[], port|null, ipv4[], ipv6[], echLength|null, echPublicName|null }
+//
+// echPublicName is the "outer SNI" — the hostname the browser sends to
+// the network during the TLS handshake while the real hostname stays
+// encrypted. Cloudflare always uses "cloudflare-ech.com". A site
+// self-hosting ECH will use its own domain or a different provider's.
 
 const KEY_ALPN = 1, KEY_PORT = 3, KEY_IPV4 = 4, KEY_ECH = 5, KEY_IPV6 = 6;
 
 function emptySummary(priority = 0) {
-  return { priority, alpn: [], port: null, ipv4: [], ipv6: [], echLength: null };
+  return { priority, alpn: [], port: null, ipv4: [], ipv6: [], echLength: null, echPublicName: null };
+}
+
+// Parse an ECHConfigList (RFC 9460 §4) and return the public_name of the
+// first recognisable ECHConfig entry, or null on any failure. The public_name
+// is the outer SNI — what the network actually sees — while the real hostname
+// stays encrypted inside the ECH extension. We only need the first entry
+// because all entries in a well-formed list share the same public_name.
+//
+// ECHConfigList wire layout:
+//   uint16  list_length   (total bytes of what follows)
+//   ECHConfig[] {
+//     uint16  version       (0xfe0d for RFC 9460)
+//     uint16  entry_length  (bytes of contents, skip if version unknown)
+//     // if version == 0xfe0d:
+//     uint8   config_id
+//     uint16  kem_id
+//     uint16  public_key_length  + public_key bytes
+//     uint16  cipher_suites_length + cipher_suite bytes
+//     uint8   maximum_name_length
+//     uint8   public_name_length  + public_name bytes   ← we want this
+//     uint16  extensions_length   + extension bytes
+//   }
+function parseEchConfigListPublicName(bytes) {
+  if (bytes.length < 2) return null;
+  const listLen = (bytes[0] << 8) | bytes[1];
+  if (listLen + 2 > bytes.length) return null;
+
+  let off = 2;
+  const end = 2 + listLen;
+  while (off + 4 <= end) {
+    const version = (bytes[off] << 8) | bytes[off + 1];
+    const entryLen = (bytes[off + 2] << 8) | bytes[off + 3];
+    off += 4;
+    if (off + entryLen > end) break;
+    const entryEnd = off + entryLen;
+
+    if (version === 0xfe0d) {
+      const name = readEchPublicName(bytes, off, entryEnd);
+      if (name) return name;
+    }
+    off = entryEnd; // skip unknown version or failed parse
+  }
+  return null;
+}
+
+// Walks bytes[off..end) following the ECHConfigContents field layout
+// (RFC 9460 §4) to locate and return the public_name string. Returns
+// null if any length check fails, keeping the caller safe against
+// malformed or deliberately crafted inputs.
+function readEchPublicName(bytes, off, end) {
+  if (off + 1 > end) return null;
+  off += 1; // config_id (uint8)
+
+  if (off + 2 > end) return null;
+  off += 2; // kem_id (uint16)
+
+  if (off + 2 > end) return null;
+  const pkLen = (bytes[off] << 8) | bytes[off + 1];
+  off += 2;
+  if (off + pkLen > end) return null;
+  off += pkLen; // public_key
+
+  if (off + 2 > end) return null;
+  const csLen = (bytes[off] << 8) | bytes[off + 1];
+  off += 2;
+  if (off + csLen > end) return null;
+  off += csLen; // cipher_suites
+
+  if (off + 1 > end) return null;
+  off += 1; // maximum_name_length (uint8)
+
+  if (off + 1 > end) return null;
+  const nameLen = bytes[off];
+  off += 1;
+  if (nameLen === 0 || off + nameLen > end) return null;
+  return new TextDecoder().decode(bytes.subarray(off, off + nameLen));
 }
 
 function parseWire(data) {
@@ -88,7 +169,10 @@ function parseWire(data) {
         }
         break;
       case KEY_ECH:
-        if (v.length > 0) out.echLength = v.length;
+        if (v.length > 0) {
+          out.echLength = v.length;
+          out.echPublicName = parseEchConfigListPublicName(v);
+        }
         break;
     }
   }
@@ -138,7 +222,13 @@ function parsePresentation(data) {
         out.ipv6 = value.split(",").map(s => s.trim()).filter(Boolean);
         break;
       case "ech":
-        try { out.echLength = atob(value).length; } catch {}
+        try {
+          const raw = atob(value);
+          const u8 = new Uint8Array(raw.length);
+          for (let i = 0; i < raw.length; i++) u8[i] = raw.charCodeAt(i);
+          out.echLength = u8.length;
+          out.echPublicName = parseEchConfigListPublicName(u8);
+        } catch {}
         break;
     }
   }

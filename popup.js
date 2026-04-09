@@ -33,7 +33,7 @@ const STATUS_LABEL = {
 
 const NOTES = {
   confirmed: "Your browser negotiated Encrypted Client Hello with this site. The hostname you visited (the SNI) was hidden from anyone watching the network — only your DNS resolver and the site itself know what you connected to.",
-  advertised: "This site publishes an ECH key in DNS, so a modern Brave with ECH enabled will use it automatically. WhereECH can't see inside your actual TLS handshake, so it can't 100% confirm ECH was used — enable the Cloudflare trace probe in Settings for proof on Cloudflare-hosted sites.",
+  advertised: "This site publishes an ECH key in DNS, so a browser that supports ECH will use it automatically on the TLS handshake. WhereECH can't see inside your actual handshake, so it can't 100% confirm ECH was used — enable the Cloudflare trace probe in Settings for proof on Cloudflare-hosted sites.",
   not_advertised: "This site does not publish an ECH key in DNS. Your browser sent the hostname (SNI) in the clear during the TLS handshake, where any on-path observer could read it. The traffic itself is still encrypted.",
   unknown: "WhereECH couldn't reach the DNS-over-HTTPS resolver. Check your network connection, or pick a different resolver in Settings.",
   skipped: "WhereECH only inspects regular HTTPS websites. Browser pages, local files, and IP-literal addresses don't apply.",
@@ -56,7 +56,20 @@ function setHero(state, label) {
   $("status-label").textContent = label;
 }
 
+// Hide every data row in the info card so a re-render (e.g. after a
+// failed recheck) never leaves stale values visible from a prior result.
+function resetRows() {
+  for (const id of [
+    "resolver-row", "ech-row", "echname-row", "alpn-row",
+    "ipv4-row", "ipv6-row", "sni-row", "kex-row", "pq-row", "error-row",
+  ]) {
+    $(id).classList.add("hidden");
+  }
+  $("rr").textContent = "";
+}
+
 function render(resp) {
+  resetRows();
   if (!resp.ok) {
     setHero("unknown", "Error");
     $("host").textContent = "";
@@ -67,7 +80,6 @@ function render(resp) {
     setHero("skipped", "Not applicable");
     $("host").textContent = "";
     $("note").textContent = NOTES.skipped;
-    setRow("resolver-row", "resolver-v", null);
     $("recheck").disabled = true;
     return;
   }
@@ -83,6 +95,7 @@ function render(resp) {
 
   const s = r.summary || {};
   setRow("ech-row", "ech-v", s.echLength ? `${s.echLength} bytes` : null);
+  setRow("echname-row", "echname-v", s.echPublicName || null);
   setRow("alpn-row", "alpn-v", s.alpn);
   setRow("ipv4-row", "ipv4-v", s.ipv4);
   setRow("ipv6-row", "ipv6-v", s.ipv6);
@@ -90,6 +103,11 @@ function render(resp) {
     : r.sni === "plaintext" ? "hostname was visible (ECH not used)"
     : r.sni;
   setRow("sni-row", "sni-v", sniText);
+  setRow("kex-row", "kex-v", r.kex || null);
+  const pqText = r.kex
+    ? (r.pq ? "Yes — quantum-resistant key exchange" : "No — classical key exchange")
+    : null;
+  setRow("pq-row", "pq-v", pqText);
   setRow("error-row", "error-v", r.error);
 
   $("rr").textContent = (r.rrRaw && r.rrRaw.length) ? r.rrRaw.join("\n\n") : "(none)";

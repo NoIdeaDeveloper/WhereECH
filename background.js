@@ -73,14 +73,37 @@ const DEFAULTS = {
   nextdnsId: "",
   autoLookup: true,
   traceProbe: false,
+  pqProbe: false,
   keepHistory: false,
 };
 
 // In-memory only. Lives inside this service worker and is wiped whenever
 // the browser restarts the worker (which happens frequently). Nothing in
 // this Map is ever written to disk. It exists purely to coalesce repeated
-// lookups of the same host during one browsing session.
+// lookups of the same host during one browsing session. A hard size cap
+// prevents unbounded growth on long-lived workers: insertion order + a
+// move-to-end on hit gives cheap LRU eviction.
+const CACHE_MAX = 500;
 const cache = new Map(); // host -> result
+
+function cacheGet(host) {
+  const v = cache.get(host);
+  if (v === undefined) return undefined;
+  // Move to end to mark as most-recently-used.
+  cache.delete(host);
+  cache.set(host, v);
+  return v;
+}
+
+function cacheSet(host, value) {
+  if (cache.has(host)) cache.delete(host);
+  cache.set(host, value);
+  while (cache.size > CACHE_MAX) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
 
 // Lets us correlate an async lookup that finishes late with the tab it
 // started in, so we don't paint a stale badge on a tab that has since
@@ -198,7 +221,12 @@ async function dohLookupHttpsRR(host, settings) {
       signal: ctrl.signal,
     });
     if (!res.ok) throw new Error(`DoH HTTP ${res.status}`);
-    const json = await res.json();
+    // Cap the response body. A well-formed DoH JSON answer is typically a
+    // few hundred bytes; 64 KB is generous while still preventing a
+    // compromised resolver from making us buffer megabytes into memory.
+    const text = await res.text();
+    if (text.length > 65536) throw new Error("DoH response too large");
+    const json = JSON.parse(text);
     const answers = (json.Answer || []).filter(a => a.type === 65);
     return answers.map(a => a.data);
   } finally {
@@ -207,24 +235,29 @@ async function dohLookupHttpsRR(host, settings) {
 }
 
 // OPTIONAL feature — disabled by default. Only runs if you explicitly
-// enable "Confirm with Cloudflare" in Settings AND you grant the extra
-// host permission it asks for at that time.
+// enable "Confirm with Cloudflare" or "Post-quantum check" in Settings
+// AND you grant the extra host permission it asks for at that time.
 //
 // What it does: fetches a single URL (https://<host>/cdn-cgi/trace) on
 // the site you just visited. That endpoint is a well-known, documented
 // Cloudflare feature that simply reports metadata about the connection
 // you just made — including whether your browser used ECH on the TLS
-// handshake. The response is a few hundred bytes of key=value lines.
+// handshake and which key-exchange algorithm was negotiated. The
+// response is a few hundred bytes of key=value lines.
 //
 // What it does NOT do: it sends no cookies, no referrer, and refuses
-// redirects. It reads ONLY the `sni=` line from the response; everything
-// else is discarded. It is never called for a host that is not the one
-// you're currently visiting, so it does not generate any traffic you
-// weren't already making to that site.
+// redirects. It reads only the `sni=` and `kex=` lines from the
+// response; everything else is discarded. It is never called for a host
+// that is not the one you're currently visiting, so it does not generate
+// any traffic you weren't already making to that site.
 //
 // Why it exists: a DNS lookup can only tell us whether a site *offers*
-// ECH. It can't tell us whether your browser actually negotiated it.
-// The trace endpoint closes that loop for Cloudflare-hosted sites.
+// ECH. It can't tell us whether your browser actually negotiated it, or
+// what key-exchange was used. The trace endpoint closes that loop for
+// Cloudflare-hosted sites. The `kex=` field reveals whether the
+// connection used a post-quantum key exchange (e.g. X25519MLKEM768).
+//
+// Returns { sni, kex } or null if the endpoint is unreachable.
 async function probeCloudflareTrace(host) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 3000);
@@ -238,14 +271,55 @@ async function probeCloudflareTrace(host) {
       redirect: "error",
     });
     if (!res.ok) return null;
-    const text = await res.text();
-    const m = text.match(/^sni=(.*)$/m);
-    return m ? m[1].trim() : null;
+    // Cloudflare's real /cdn-cgi/trace response is a few hundred bytes.
+    // Cap what we'll read so a misbehaving (or compromised) host can't
+    // make us buffer an unbounded response into memory. We stream the
+    // body and bail the moment we exceed the cap.
+    const MAX_BYTES = 4096;
+    const reader = res.body && res.body.getReader ? res.body.getReader() : null;
+    let text;
+    if (reader) {
+      const chunks = [];
+      let total = 0;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > MAX_BYTES) {
+          try { await reader.cancel(); } catch {}
+          return null;
+        }
+        chunks.push(value);
+      }
+      const merged = new Uint8Array(total);
+      let off = 0;
+      for (const c of chunks) { merged.set(c, off); off += c.byteLength; }
+      text = new TextDecoder().decode(merged);
+    } else {
+      text = await res.text();
+      if (text.length > MAX_BYTES) return null;
+    }
+    const sniM = text.match(/^sni=(.*)$/m);
+    const kexM = text.match(/^kex=(.*)$/m);
+    return {
+      sni: sniM ? sniM[1].trim() : null,
+      kex: kexM ? kexM[1].trim() : null,
+    };
   } catch {
     return null;
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Returns true if the key-exchange algorithm name indicates a
+// post-quantum or post-quantum hybrid scheme. Current known PQ kex
+// values from Cloudflare: X25519Kyber768Draft00, X25519MLKEM768.
+function isPostQuantumKex(kex) {
+  if (!kex) return false;
+  const upper = kex.toUpperCase();
+  return upper.includes("KYBER") || upper.includes("MLKEM");
 }
 
 // The main pipeline: takes a hostname, returns its ECH status.
@@ -264,7 +338,7 @@ async function probeCloudflareTrace(host) {
 // on an explicit opt-in you control from Settings. Non-ECH sites and
 // inconclusive lookups are never recorded in history.
 async function evaluateHost(host, { force = false } = {}) {
-  const cached = cache.get(host);
+  const cached = cacheGet(host);
   if (!force && cached) {
     const ttl = cached.error ? FAILURE_TTL_MS : SUCCESS_TTL_MS;
     if (Date.now() - cached.ts < ttl) return cached;
@@ -278,6 +352,8 @@ async function evaluateHost(host, { force = false } = {}) {
     rrRaw: [],
     summary: null,
     sni: null,
+    kex: null,
+    pq: false,
     error: null,
     resolver: settings.resolver,
   };
@@ -297,18 +373,27 @@ async function evaluateHost(host, { force = false } = {}) {
     result.status = STATUS.UNKNOWN;
   }
 
-  if (settings.traceProbe && result.status !== STATUS.UNKNOWN) {
+  // The trace probe serves two opt-in features (ECH confirmation and
+  // post-quantum detection) via a single fetch. We fire it when either
+  // is enabled, so one request answers both questions.
+  if ((settings.traceProbe || settings.pqProbe) && result.status !== STATUS.UNKNOWN) {
     const hasPerm = await chrome.permissions.contains({ origins: ["https://*/*"] }).catch(() => false);
     if (hasPerm) {
-      const sni = await probeCloudflareTrace(host);
-      if (sni) {
-        result.sni = sni;
-        if (sni === "encrypted") result.status = STATUS.CONFIRMED;
+      const trace = await probeCloudflareTrace(host);
+      if (trace) {
+        if (settings.traceProbe && trace.sni) {
+          result.sni = trace.sni;
+          if (trace.sni === "encrypted") result.status = STATUS.CONFIRMED;
+        }
+        if (settings.pqProbe && trace.kex) {
+          result.kex = trace.kex;
+          result.pq = isPostQuantumKex(trace.kex);
+        }
       }
     }
   }
 
-  cache.set(host, result);
+  cacheSet(host, result);
 
   if (
     settings.keepHistory &&
@@ -373,7 +458,7 @@ async function handleNavigation(tabId, url) {
 // so the popup never displays stale resolver/probe metadata.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
-  if (changes.resolver || changes.customResolver || changes.nextdnsId || changes.traceProbe) {
+  if (changes.resolver || changes.customResolver || changes.nextdnsId || changes.traceProbe || changes.pqProbe) {
     cache.clear();
   }
 });
