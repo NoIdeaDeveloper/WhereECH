@@ -248,6 +248,8 @@ main {
 .row:nth-child(5) { animation-delay: .50s; }
 .row:nth-child(6) { animation-delay: .54s; }
 .row:nth-child(7) { animation-delay: .58s; }
+.row:nth-child(8) { animation-delay: .62s; }
+.row:nth-child(9) { animation-delay: .66s; }
 .row:last-child { border-bottom: 0; }
 .row .k {
   color: var(--fg-muted);

@@ -91,6 +91,11 @@ function render(resp) {
     : r.sni === "plaintext" ? "hostname was visible (ECH not used)"
     : r.sni;
   setRow("sni-row", "sni-v", sniText);
+  setRow("kex-row", "kex-v", r.kex || null);
+  const pqText = r.kex
+    ? (r.pq ? "Yes — quantum-resistant key exchange" : "No — classical key exchange")
+    : null;
+  setRow("pq-row", "pq-v", pqText);
   setRow("error-row", "error-v", r.error);
 
   $("rr").textContent = (r.rrRaw && r.rrRaw.length) ? r.rrRaw.join("\n\n") : "(none)";

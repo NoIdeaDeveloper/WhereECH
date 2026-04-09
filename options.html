@@ -84,6 +84,25 @@
     </section>
 
     <section class="card">
+      <h2>Post-quantum check <span class="badge">optional</span></h2>
+      <p class="hint">
+        When enabled, WhereECH uses the same Cloudflare <code>/cdn-cgi/trace</code> endpoint to check
+        whether your TLS connection negotiated a <strong>post-quantum key exchange</strong>
+        (e.g.&nbsp;X25519MLKEM768). Post-quantum key exchange protects your session key against
+        future quantum-computer attacks — even if an adversary records your encrypted traffic today.
+      </p>
+      <p class="hint">
+        This only works on Cloudflare-hosted sites. If the trace probe (above) is also on, only one
+        request is made — both features share the same response. Requires the same host permission.
+      </p>
+      <label class="opt">
+        <input type="checkbox" id="pqProbe">
+        Check for post-quantum key exchange
+      </label>
+      <div id="pqPermStatus" class="hint"></div>
+    </section>
+
+    <section class="card">
       <h2>ECH site history <span class="badge">optional</span></h2>
       <p class="hint">
         When enabled, WhereECH keeps a private list of sites it has seen advertising or using
