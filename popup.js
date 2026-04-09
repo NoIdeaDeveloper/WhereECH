@@ -56,7 +56,20 @@ function setHero(state, label) {
   $("status-label").textContent = label;
 }
 
+// Hide every data row in the info card so a re-render (e.g. after a
+// failed recheck) never leaves stale values visible from a prior result.
+function resetRows() {
+  for (const id of [
+    "resolver-row", "ech-row", "echname-row", "alpn-row",
+    "ipv4-row", "ipv6-row", "sni-row", "kex-row", "pq-row", "error-row",
+  ]) {
+    $(id).classList.add("hidden");
+  }
+  $("rr").textContent = "";
+}
+
 function render(resp) {
+  resetRows();
   if (!resp.ok) {
     setHero("unknown", "Error");
     $("host").textContent = "";
@@ -67,7 +80,6 @@ function render(resp) {
     setHero("skipped", "Not applicable");
     $("host").textContent = "";
     $("note").textContent = NOTES.skipped;
-    setRow("resolver-row", "resolver-v", null);
     $("recheck").disabled = true;
     return;
   }

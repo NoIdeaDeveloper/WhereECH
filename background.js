@@ -221,7 +221,12 @@ async function dohLookupHttpsRR(host, settings) {
       signal: ctrl.signal,
     });
     if (!res.ok) throw new Error(`DoH HTTP ${res.status}`);
-    const json = await res.json();
+    // Cap the response body. A well-formed DoH JSON answer is typically a
+    // few hundred bytes; 64 KB is generous while still preventing a
+    // compromised resolver from making us buffer megabytes into memory.
+    const text = await res.text();
+    if (text.length > 65536) throw new Error("DoH response too large");
+    const json = JSON.parse(text);
     const answers = (json.Answer || []).filter(a => a.type === 65);
     return answers.map(a => a.data);
   } finally {
@@ -380,7 +385,7 @@ async function evaluateHost(host, { force = false } = {}) {
           result.sni = trace.sni;
           if (trace.sni === "encrypted") result.status = STATUS.CONFIRMED;
         }
-        if (trace.kex) {
+        if (settings.pqProbe && trace.kex) {
           result.kex = trace.kex;
           result.pq = isPostQuantumKex(trace.kex);
         }

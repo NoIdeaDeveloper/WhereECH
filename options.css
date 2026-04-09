@@ -73,6 +73,8 @@ main {
 .card:nth-of-type(2) { animation-delay: .30s; }
 .card:nth-of-type(3) { animation-delay: .38s; }
 .card:nth-of-type(4) { animation-delay: .46s; }
+.card:nth-of-type(5) { animation-delay: .54s; }
+.card:nth-of-type(6) { animation-delay: .62s; }
 
 /* Title */
 .title-row {
