@@ -61,7 +61,7 @@ function setHero(state, label) {
 function resetRows() {
   for (const id of [
     "resolver-row", "ech-row", "echname-row", "alpn-row",
-    "ipv4-row", "ipv6-row", "sni-row", "kex-row", "pq-row", "error-row",
+    "ipv4-row", "ipv6-row", "sni-row", "error-row",
   ]) {
     $(id).classList.add("hidden");
   }
@@ -103,11 +103,6 @@ function render(resp) {
     : r.sni === "plaintext" ? "hostname was visible (ECH not used)"
     : r.sni;
   setRow("sni-row", "sni-v", sniText);
-  setRow("kex-row", "kex-v", r.kex || null);
-  const pqText = r.kex
-    ? (r.pq ? "Yes — quantum-resistant key exchange" : "No — classical key exchange")
-    : null;
-  setRow("pq-row", "pq-v", pqText);
   setRow("error-row", "error-v", r.error);
 
   $("rr").textContent = (r.rrRaw && r.rrRaw.length) ? r.rrRaw.join("\n\n") : "(none)";

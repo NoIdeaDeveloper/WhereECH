@@ -29,7 +29,6 @@ const DEFAULTS = {
   nextdnsId: "",
   autoLookup: true,
   traceProbe: false,
-  pqProbe: false,
   keepHistory: false,
 };
 
@@ -48,7 +47,6 @@ async function load() {
   $("nextdnsId").disabled = s.resolver !== "nextdns";
   $("autoLookup").checked = !!s.autoLookup;
   $("traceProbe").checked = !!s.traceProbe;
-  $("pqProbe").checked = !!s.pqProbe;
   $("keepHistory").checked = !!s.keepHistory;
   await updatePermStatus();
   await refreshHistory();
@@ -153,20 +151,12 @@ async function ensureCustomResolverPermission() {
 async function updatePermStatus() {
   const has = await chrome.permissions.contains(TRACE_ORIGINS).catch(() => false);
   const traceEl = $("permStatus");
-  const pqEl = $("pqPermStatus");
   if ($("traceProbe").checked && !has) {
     traceEl.textContent = "Permission not yet granted — toggling on will prompt.";
   } else if (has) {
     traceEl.textContent = "Host permission granted.";
   } else {
     traceEl.textContent = "";
-  }
-  if ($("pqProbe").checked && !has) {
-    pqEl.textContent = "Permission not yet granted — toggling on will prompt.";
-  } else if (has) {
-    pqEl.textContent = "Host permission granted.";
-  } else {
-    pqEl.textContent = "";
   }
 }
 
@@ -245,29 +235,9 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
     } else {
-      // Only revoke the permission if pqProbe isn't using it too.
-      if (!$("pqProbe").checked) {
-        await chrome.permissions.remove(TRACE_ORIGINS).catch(() => {});
-      }
+      await chrome.permissions.remove(TRACE_ORIGINS).catch(() => {});
     }
     await save({ traceProbe: e.target.checked });
-    await updatePermStatus();
-  });
-  $("pqProbe").addEventListener("change", async (e) => {
-    if (e.target.checked) {
-      const granted = await chrome.permissions.request(TRACE_ORIGINS).catch(() => false);
-      if (!granted) {
-        e.target.checked = false;
-        toast("Permission denied");
-        return;
-      }
-    } else {
-      // Only revoke the permission if traceProbe isn't using it too.
-      if (!$("traceProbe").checked) {
-        await chrome.permissions.remove(TRACE_ORIGINS).catch(() => {});
-      }
-    }
-    await save({ pqProbe: e.target.checked });
     await updatePermStatus();
   });
   $("keepHistory").addEventListener("change", async (e) => {

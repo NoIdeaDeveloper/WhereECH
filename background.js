@@ -73,7 +73,6 @@ const DEFAULTS = {
   nextdnsId: "",
   autoLookup: true,
   traceProbe: false,
-  pqProbe: false,
   keepHistory: false,
 };
 
@@ -235,29 +234,26 @@ async function dohLookupHttpsRR(host, settings) {
 }
 
 // OPTIONAL feature — disabled by default. Only runs if you explicitly
-// enable "Confirm with Cloudflare" or "Post-quantum check" in Settings
-// AND you grant the extra host permission it asks for at that time.
+// enable "Confirm with Cloudflare" in Settings AND you grant the extra
+// host permission it asks for at that time.
 //
 // What it does: fetches a single URL (https://<host>/cdn-cgi/trace) on
 // the site you just visited. That endpoint is a well-known, documented
 // Cloudflare feature that simply reports metadata about the connection
 // you just made — including whether your browser used ECH on the TLS
-// handshake and which key-exchange algorithm was negotiated. The
-// response is a few hundred bytes of key=value lines.
+// handshake. The response is a few hundred bytes of key=value lines.
 //
 // What it does NOT do: it sends no cookies, no referrer, and refuses
-// redirects. It reads only the `sni=` and `kex=` lines from the
-// response; everything else is discarded. It is never called for a host
-// that is not the one you're currently visiting, so it does not generate
-// any traffic you weren't already making to that site.
+// redirects. It reads only the `sni=` line from the response;
+// everything else is discarded. It is never called for a host that is
+// not the one you're currently visiting, so it does not generate any
+// traffic you weren't already making to that site.
 //
 // Why it exists: a DNS lookup can only tell us whether a site *offers*
-// ECH. It can't tell us whether your browser actually negotiated it, or
-// what key-exchange was used. The trace endpoint closes that loop for
-// Cloudflare-hosted sites. The `kex=` field reveals whether the
-// connection used a post-quantum key exchange (e.g. X25519MLKEM768).
+// ECH. It can't tell us whether your browser actually negotiated it.
+// The trace endpoint closes that loop for Cloudflare-hosted sites.
 //
-// Returns { sni, kex } or null if the endpoint is unreachable.
+// Returns the sni value (string) or null if the endpoint is unreachable.
 async function probeCloudflareTrace(host) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 3000);
@@ -301,25 +297,12 @@ async function probeCloudflareTrace(host) {
       if (text.length > MAX_BYTES) return null;
     }
     const sniM = text.match(/^sni=(.*)$/m);
-    const kexM = text.match(/^kex=(.*)$/m);
-    return {
-      sni: sniM ? sniM[1].trim() : null,
-      kex: kexM ? kexM[1].trim() : null,
-    };
+    return sniM ? sniM[1].trim() : null;
   } catch {
     return null;
   } finally {
     clearTimeout(timer);
   }
-}
-
-// Returns true if the key-exchange algorithm name indicates a
-// post-quantum or post-quantum hybrid scheme. Current known PQ kex
-// values from Cloudflare: X25519Kyber768Draft00, X25519MLKEM768.
-function isPostQuantumKex(kex) {
-  if (!kex) return false;
-  const upper = kex.toUpperCase();
-  return upper.includes("KYBER") || upper.includes("MLKEM");
 }
 
 // The main pipeline: takes a hostname, returns its ECH status.
@@ -352,8 +335,6 @@ async function evaluateHost(host, { force = false } = {}) {
     rrRaw: [],
     summary: null,
     sni: null,
-    kex: null,
-    pq: false,
     error: null,
     resolver: settings.resolver,
   };
@@ -373,22 +354,15 @@ async function evaluateHost(host, { force = false } = {}) {
     result.status = STATUS.UNKNOWN;
   }
 
-  // The trace probe serves two opt-in features (ECH confirmation and
-  // post-quantum detection) via a single fetch. We fire it when either
-  // is enabled, so one request answers both questions.
-  if ((settings.traceProbe || settings.pqProbe) && result.status !== STATUS.UNKNOWN) {
+  // Optional Cloudflare trace probe — fires only when the user has
+  // opted in and granted the host permission.
+  if (settings.traceProbe && result.status !== STATUS.UNKNOWN) {
     const hasPerm = await chrome.permissions.contains({ origins: ["https://*/*"] }).catch(() => false);
     if (hasPerm) {
-      const trace = await probeCloudflareTrace(host);
-      if (trace) {
-        if (settings.traceProbe && trace.sni) {
-          result.sni = trace.sni;
-          if (trace.sni === "encrypted") result.status = STATUS.CONFIRMED;
-        }
-        if (settings.pqProbe && trace.kex) {
-          result.kex = trace.kex;
-          result.pq = isPostQuantumKex(trace.kex);
-        }
+      const sni = await probeCloudflareTrace(host);
+      if (sni) {
+        result.sni = sni;
+        if (sni === "encrypted") result.status = STATUS.CONFIRMED;
       }
     }
   }
@@ -458,7 +432,7 @@ async function handleNavigation(tabId, url) {
 // so the popup never displays stale resolver/probe metadata.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
-  if (changes.resolver || changes.customResolver || changes.nextdnsId || changes.traceProbe || changes.pqProbe) {
+  if (changes.resolver || changes.customResolver || changes.nextdnsId || changes.traceProbe) {
     cache.clear();
   }
 });
