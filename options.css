@@ -161,6 +161,14 @@ h2 {
   line-height: 1.6;
   margin: 6px 0 0 24px;
 }
+
+.hidden { display: none !important; }
+
+.sub-opt {
+  margin-left: 24px;
+  border-left: 2px solid var(--border);
+  padding-left: 14px;
+}
 .card > .hint:first-of-type {
   margin: 0 0 14px 0;
 }
@@ -288,6 +296,10 @@ button.ghost-small {
   font-size: 12px;
   padding: 5px 10px;
   border-radius: 8px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--fg-muted);
 }
+button.ghost-small:hover { background: var(--surface-2); color: var(--fg); }
 .history-empty { margin-top: 10px; }
 .history-empty.hidden { display: none; }

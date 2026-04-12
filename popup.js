@@ -26,6 +26,7 @@
 const STATUS_LABEL = {
   confirmed: "ECH active",
   advertised: "ECH supported",
+  history: "ECH supported",
   not_advertised: "No ECH",
   unknown: "Unavailable",
   skipped: "Not applicable",
@@ -34,6 +35,7 @@ const STATUS_LABEL = {
 const NOTES = {
   confirmed: "Your browser negotiated Encrypted Client Hello with this site. The hostname you visited (the SNI) was hidden from anyone watching the network — only your DNS resolver and the site itself know what you connected to.",
   advertised: "This site publishes an ECH key in DNS, so a browser that supports ECH will use it automatically on the TLS handshake. WhereECH can't see inside your actual handshake, so it can't 100% confirm ECH was used — enable the Cloudflare trace probe in Settings for proof on Cloudflare-hosted sites.",
+  history: "This site was found in your ECH history from a previous visit, so WhereECH skipped the DNS lookup. Hit Re-check to run a fresh lookup instead.",
   not_advertised: "This site does not publish an ECH key in DNS. Your browser sent the hostname (SNI) in the clear during the TLS handshake, where any on-path observer could read it. The traffic itself is still encrypted.",
   unknown: "WhereECH couldn't reach the DNS-over-HTTPS resolver. Check your network connection, or pick a different resolver in Settings.",
   skipped: "WhereECH only inspects regular HTTPS websites. Browser pages, local files, and IP-literal addresses don't apply.",
@@ -61,7 +63,7 @@ function setHero(state, label) {
 function resetRows() {
   for (const id of [
     "resolver-row", "ech-row", "echname-row", "alpn-row",
-    "ipv4-row", "ipv6-row", "sni-row", "kex-row", "pq-row", "error-row",
+    "ipv4-row", "ipv6-row", "sni-row", "error-row",
   ]) {
     $(id).classList.add("hidden");
   }
@@ -103,11 +105,6 @@ function render(resp) {
     : r.sni === "plaintext" ? "hostname was visible (ECH not used)"
     : r.sni;
   setRow("sni-row", "sni-v", sniText);
-  setRow("kex-row", "kex-v", r.kex || null);
-  const pqText = r.kex
-    ? (r.pq ? "Yes — quantum-resistant key exchange" : "No — classical key exchange")
-    : null;
-  setRow("pq-row", "pq-v", pqText);
   setRow("error-row", "error-v", r.error);
 
   $("rr").textContent = (r.rrRaw && r.rrRaw.length) ? r.rrRaw.join("\n\n") : "(none)";

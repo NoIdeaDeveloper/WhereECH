@@ -43,9 +43,9 @@
         Enter your NextDNS profile ID (the short code shown in your NextDNS dashboard, e.g. <code>abc123</code>).
         Lookups will be answered by your own NextDNS configuration, including any filters you've enabled.
       </p>
-      <input type="text" id="nextdnsId" placeholder="profile ID, e.g. abc123" autocomplete="off" spellcheck="false" disabled>
+      <input type="text" id="nextdnsId" aria-label="NextDNS profile ID" placeholder="profile ID, e.g. abc123" autocomplete="off" spellcheck="false" disabled>
       <label class="opt"><input type="radio" name="resolver" value="custom"> Custom — your own DoH endpoint</label>
-      <input type="url" id="customResolver" placeholder="https://your-resolver.example/dns-query" disabled>
+      <input type="url" id="customResolver" aria-label="Custom DoH resolver URL" placeholder="https://your-resolver.example/dns-query" disabled>
       <p class="hint">Custom resolvers must be HTTPS and speak the JSON DoH protocol (the same format Cloudflare and NextDNS use).</p>
     </section>
 
@@ -83,24 +83,6 @@
       <div id="permStatus" class="hint"></div>
     </section>
 
-    <section class="card">
-      <h2>Post-quantum check <span class="badge">optional</span></h2>
-      <p class="hint">
-        When enabled, WhereECH uses the same Cloudflare <code>/cdn-cgi/trace</code> endpoint to check
-        whether your TLS connection negotiated a <strong>post-quantum key exchange</strong>
-        (e.g.&nbsp;X25519MLKEM768). Post-quantum key exchange protects your session key against
-        future quantum-computer attacks — even if an adversary records your encrypted traffic today.
-      </p>
-      <p class="hint">
-        This only works on Cloudflare-hosted sites. If the trace probe (above) is also on, only one
-        request is made — both features share the same response. Requires the same host permission.
-      </p>
-      <label class="opt">
-        <input type="checkbox" id="pqProbe">
-        Check for post-quantum key exchange
-      </label>
-      <div id="pqPermStatus" class="hint"></div>
-    </section>
 
     <section class="card">
       <h2>ECH site history <span class="badge">optional</span></h2>
@@ -127,6 +109,17 @@
         <input type="checkbox" id="keepHistory">
         Remember sites that support ECH
       </label>
+      <div id="historyFastPathRow" class="sub-opt hidden">
+        <label class="opt">
+          <input type="checkbox" id="historyFastPath">
+          Skip DNS lookup for sites already in your ECH history
+          <div class="hint">
+            When enabled, WhereECH checks your saved ECH history before querying DNS.
+            If a site is already known to support ECH, the lookup is skipped entirely.
+            Use Re-check in the popup to force a fresh DNS query for any site.
+          </div>
+        </label>
+      </div>
       <div class="history-controls">
         <button id="refreshHistory" type="button">Refresh</button>
         <button id="clearHistory" type="button" class="danger">Clear entire list</button>

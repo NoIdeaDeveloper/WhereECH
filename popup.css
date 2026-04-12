@@ -147,8 +147,11 @@ main {
   from { transform: scaleX(0); opacity: 0; }
   to   { transform: scaleX(1); opacity: .6; }
 }
-.hero[data-state="advertised"], .hero[data-state="confirmed"] { --accent: var(--green); }
-.hero[data-state="advertised"] { border-color: color-mix(in srgb, var(--green) 35%, var(--border)); }
+.hero[data-state="advertised"],
+.hero[data-state="confirmed"],
+.hero[data-state="history"]    { --accent: var(--green); }
+.hero[data-state="advertised"],
+.hero[data-state="history"]    { border-color: color-mix(in srgb, var(--green) 35%, var(--border)); }
 .hero[data-state="confirmed"]  { border-color: color-mix(in srgb, var(--green) 60%, var(--border)); box-shadow: var(--shadow-md); }
 .hero[data-state="not_advertised"] { --accent: var(--slate); }
 .hero[data-state="unknown"]    { --accent: var(--amber); border-color: color-mix(in srgb, var(--amber) 35%, var(--border)); }
@@ -190,7 +193,8 @@ main {
   animation: none;
 }
 .hero[data-state="advertised"] .pill,
-.hero[data-state="confirmed"]  .pill {
+.hero[data-state="confirmed"]  .pill,
+.hero[data-state="history"]    .pill {
   background: var(--green-soft);
   color: var(--green-2);
 }

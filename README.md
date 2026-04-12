@@ -11,7 +11,7 @@ Without ECH, even though page contents are encrypted, the site name still leaks 
 - **Privacy mode** — disable automatic lookups so DNS queries only happen when you explicitly click the toolbar icon.
 - **ECH outer name** — shows the public name from each site's ECH configuration (e.g. `cloudflare-ech.com` for Cloudflare-hosted sites vs. a self-hosted domain), so you can see whose infrastructure is providing the ECH layer.
 - **Optional Cloudflare trace confirmation** — for Cloudflare-hosted sites, verify via `/cdn-cgi/trace` that your actual connection used ECH (not just that the site offers it).
-- **Optional post-quantum detection** — for Cloudflare-hosted sites, check whether your TLS connection negotiated a post-quantum key exchange (e.g. X25519MLKEM768). Post-quantum key exchanges protect against future quantum-computer attacks even if traffic is recorded today. Shares the same request as the trace probe — enabling both costs no extra traffic.
+
 - **Optional encrypted history** — keep a local, opt-in list of sites you've seen supporting ECH. The list is encrypted with AES-GCM using a non-extractable key that never leaves your device, and you can review, remove individual entries, or wipe it all from Settings.
 - **No telemetry.** No analytics, no remote logging, no third parties beyond the DNS resolver you pick. The result cache lives only in memory and is wiped on browser restart.
 
@@ -41,7 +41,7 @@ Open the options page from the extension's menu to:
 - Pick a DoH resolver (or supply your own).
 - Toggle automatic lookups on/off.
 - Enable optional Cloudflare trace confirmation.
-- Enable optional post-quantum key-exchange detection.
+
 - Enable or disable the optional ECH site history, review or remove individual entries, or clear the entire list.
 - Clear the in-memory cache.
 

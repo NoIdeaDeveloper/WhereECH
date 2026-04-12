@@ -204,7 +204,12 @@ async function loadEntriesRaw() {
   if (!data || !Array.isArray(data.entries)) {
     throw new Error("history blob has unexpected shape");
   }
-  return { entries: data.entries, present: true };
+  // Validate each entry. Any entry that isn't a plain object with a non-empty
+  // host string is silently dropped rather than crashing downstream callers.
+  const entries = data.entries.filter(
+    (e) => e !== null && typeof e === "object" && typeof e.host === "string" && e.host.length > 0
+  );
+  return { entries, present: true };
 }
 
 async function saveEntries(entries) {
@@ -212,14 +217,23 @@ async function saveEntries(entries) {
   await chrome.storage.local.set({ [STORAGE_BLOB]: blob });
 }
 
-// Cheap structural sanity check on a hostname. We never interpolate this value
-// into HTML, but we still don't want arbitrary junk occupying a slot in the
-// encrypted store if some upstream bug hands us something unexpected.
+// Structural sanity check on a hostname before storing it. We never interpolate
+// this value into HTML, but we don't want arbitrary junk (IP literals, port
+// suffixes, path fragments) occupying a slot in the encrypted store if some
+// upstream bug hands us something unexpected.
+//
+// Criteria:
+//   - Must be a string of 1–253 characters
+//   - Must NOT be an IPv4 literal (digits-and-dots) or contain ":" (IPv6 / port)
+//   - Each label must be 1–63 chars, composed of [a-z0-9-], not starting or
+//     ending with a hyphen — per RFC 952/1123 and URL.hostname semantics
 function isPlausibleHost(host) {
   if (typeof host !== "string") return false;
   if (host.length === 0 || host.length > 253) return false;
-  // Hostname charset per RFC 1123 plus IDNA-decoded dots. URL.hostname lowercases.
-  return /^[a-z0-9.\-[\]:]+$/i.test(host);
+  // Reject IPv4 literals and anything with a colon (IPv6 or port suffix).
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(":")) return false;
+  // Each dot-separated label: starts and ends with alnum, interior may have hyphens.
+  return /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(host);
 }
 
 // Add a hostname to the encrypted history.
@@ -278,6 +292,17 @@ export function removeEchHost(host) {
     const { entries } = await loadEntriesRaw();
     const next = entries.filter((e) => e.host !== host);
     await saveEntries(next);
+  });
+}
+
+// Returns true if the hostname is already recorded in the encrypted history.
+// Used by the background service worker to skip a DoH lookup when the result
+// is already known from a previous session.
+export function isKnownEchHost(host) {
+  return withLock(async () => {
+    if (!isPlausibleHost(host)) return false;
+    const { entries } = await loadEntriesRaw();
+    return entries.some((e) => e.host === host);
   });
 }
 

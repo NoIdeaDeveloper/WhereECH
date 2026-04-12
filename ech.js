@@ -210,16 +210,16 @@ function parsePresentation(data) {
     const value = eq === -1 ? "" : tok.slice(eq + 1).replace(/^"|"$/g, "");
     switch (name) {
       case "alpn":
-        out.alpn = value.split(",").map(s => s.trim()).filter(Boolean);
+        out.alpn = value.split(",").map(s => s.trim()).filter(Boolean).slice(0, 20);
         break;
       case "port":
         out.port = parseInt(value, 10) || null;
         break;
       case "ipv4hint":
-        out.ipv4 = value.split(",").map(s => s.trim()).filter(Boolean);
+        out.ipv4 = value.split(",").map(s => s.trim()).filter(Boolean).slice(0, 16);
         break;
       case "ipv6hint":
-        out.ipv6 = value.split(",").map(s => s.trim()).filter(Boolean);
+        out.ipv6 = value.split(",").map(s => s.trim()).filter(Boolean).slice(0, 16);
         break;
       case "ech":
         try {

@@ -29,8 +29,9 @@ const DEFAULTS = {
   nextdnsId: "",
   autoLookup: true,
   traceProbe: false,
-  pqProbe: false,
+
   keepHistory: false,
+  historyFastPath: false,
 };
 
 const TRACE_ORIGINS = { origins: ["https://*/*"] };
@@ -48,8 +49,10 @@ async function load() {
   $("nextdnsId").disabled = s.resolver !== "nextdns";
   $("autoLookup").checked = !!s.autoLookup;
   $("traceProbe").checked = !!s.traceProbe;
-  $("pqProbe").checked = !!s.pqProbe;
+
   $("keepHistory").checked = !!s.keepHistory;
+  $("historyFastPath").checked = !!s.historyFastPath;
+  updateHistoryFastPathVisibility(!!s.keepHistory, !!s.historyFastPath);
   await updatePermStatus();
   await refreshHistory();
 }
@@ -153,7 +156,6 @@ async function ensureCustomResolverPermission() {
 async function updatePermStatus() {
   const has = await chrome.permissions.contains(TRACE_ORIGINS).catch(() => false);
   const traceEl = $("permStatus");
-  const pqEl = $("pqPermStatus");
   if ($("traceProbe").checked && !has) {
     traceEl.textContent = "Permission not yet granted — toggling on will prompt.";
   } else if (has) {
@@ -161,12 +163,21 @@ async function updatePermStatus() {
   } else {
     traceEl.textContent = "";
   }
-  if ($("pqProbe").checked && !has) {
-    pqEl.textContent = "Permission not yet granted — toggling on will prompt.";
-  } else if (has) {
-    pqEl.textContent = "Host permission granted.";
+}
+
+function updateHistoryFastPathVisibility(keepHistoryOn, currentFastPath) {
+  const row = $("historyFastPathRow");
+  if (keepHistoryOn) {
+    row.classList.remove("hidden");
   } else {
-    pqEl.textContent = "";
+    row.classList.add("hidden");
+    $("historyFastPath").checked = false;
+    // Only write and notify if fast-path was actually on — avoids a spurious
+    // storage.onChanged that would clear the background cache on every page load.
+    if (currentFastPath) {
+      chrome.storage.local.set({ historyFastPath: false });
+      toast("History fast-path disabled");
+    }
   }
 }
 
@@ -245,33 +256,18 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
     } else {
-      // Only revoke the permission if pqProbe isn't using it too.
-      if (!$("pqProbe").checked) {
-        await chrome.permissions.remove(TRACE_ORIGINS).catch(() => {});
-      }
+      await chrome.permissions.remove(TRACE_ORIGINS).catch(() => {});
     }
     await save({ traceProbe: e.target.checked });
     await updatePermStatus();
   });
-  $("pqProbe").addEventListener("change", async (e) => {
-    if (e.target.checked) {
-      const granted = await chrome.permissions.request(TRACE_ORIGINS).catch(() => false);
-      if (!granted) {
-        e.target.checked = false;
-        toast("Permission denied");
-        return;
-      }
-    } else {
-      // Only revoke the permission if traceProbe isn't using it too.
-      if (!$("traceProbe").checked) {
-        await chrome.permissions.remove(TRACE_ORIGINS).catch(() => {});
-      }
-    }
-    await save({ pqProbe: e.target.checked });
-    await updatePermStatus();
-  });
+
   $("keepHistory").addEventListener("change", async (e) => {
     await save({ keepHistory: e.target.checked });
+    updateHistoryFastPathVisibility(e.target.checked, $("historyFastPath").checked);
+  });
+  $("historyFastPath").addEventListener("change", async (e) => {
+    await save({ historyFastPath: e.target.checked });
   });
   $("refreshHistory").addEventListener("click", () => { refreshHistory(); });
   $("clearHistory").addEventListener("click", async () => {
