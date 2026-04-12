@@ -38,7 +38,6 @@ import {
   listEchHosts,
   removeEchHost,
   clearEchHistory,
-  isKnownEchHost,
 } from "./history.js";
 
 // How long a successful lookup stays in the in-memory cache. Used to avoid
@@ -105,6 +104,30 @@ function cacheSet(host, value) {
     if (oldest === undefined) break;
     cache.delete(oldest);
   }
+}
+
+// In-flight deduplication: if evaluateHost is already running for a given
+// host, subsequent callers wait on the same Promise rather than firing a
+// duplicate DoH query. Keyed by hostname; entries are deleted when the
+// lookup settles. Force-mode lookups bypass this map entirely.
+const pending = new Map(); // host → Promise<result>
+
+// In-memory Set of hosts known to support ECH, derived lazily from the
+// encrypted history store. null means "not yet loaded". Once populated it
+// stays in sync via optimistic adds (after recordEchHost) and explicit
+// removals (after removeEchHost / clearEchHistory). This avoids the cost
+// of decrypting and JSON-parsing the full history blob on every navigation
+// when the history fast-path is enabled — a Set.has() is O(1) in memory.
+let echHostSet = null;
+
+// Populate echHostSet from the encrypted history store on first use, then
+// cache the result. A catch-all prevents a decryption failure from breaking
+// the whole fast-path (the lookup falls through to a live DoH query instead).
+async function getEchHostSet() {
+  if (echHostSet !== null) return echHostSet;
+  const entries = await listEchHosts().catch(() => []);
+  echHostSet = new Set(entries.map(e => e.host));
+  return echHostSet;
 }
 
 // Lets us correlate an async lookup that finishes late with the tab it
@@ -217,7 +240,7 @@ async function dohLookupHttpsRR(host, settings) {
     const res = await fetch(url.toString(), {
       headers: { Accept: "application/dns-json" },
       credentials: "omit",
-      cache: "force-cache",
+      cache: "no-store",
       referrerPolicy: "no-referrer",
       redirect: "error", // refuse 3xx — a malicious resolver can't bounce us to a tracker
       signal: ctrl.signal,
@@ -314,33 +337,54 @@ async function probeCloudflareTrace(host) {
 //
 // Flow:
 //   1. Serve from in-memory cache if fresh (no network at all).
-//   2. Otherwise, ONE DoH query to the resolver you chose.
-//   3. Parse the DNS response locally (see ech.js).
-//   4. Optionally, if you opted into the trace probe, make ONE extra
+//   2. In-flight deduplication: if another lookup for this host is already
+//      running, wait on it instead of firing a second DoH query.
+//   3. History fast-path: if the host is in the in-memory ECH host Set,
+//      skip DNS entirely and return STATUS.HISTORY immediately.
+//   4. Otherwise, ONE DoH query to the resolver you chose.
+//   5. Parse the DNS response locally (see ech.js).
+//   6. Optionally, if you opted into the trace probe, make ONE extra
 //      request to the visited site itself to confirm.
-//   5. Cache the result in memory and, ONLY if you opted into history
+//   7. Cache the result in memory and, ONLY if you opted into history
 //      AND the site actually supports ECH, hand the hostname off to the
-//      encrypted history store.
+//      encrypted history store and update the in-memory Set.
 //
-// Nothing in this function writes to disk except step 5, which is gated
+// Nothing in this function writes to disk except step 7, which is gated
 // on an explicit opt-in you control from Settings. Non-ECH sites and
 // inconclusive lookups are never recorded in history.
 async function evaluateHost(host, { force = false } = {}) {
+  // Step 1: in-memory result cache.
   const cached = cacheGet(host);
   if (!force && cached) {
     const ttl = cached.error ? FAILURE_TTL_MS : SUCCESS_TTL_MS;
     if (Date.now() - cached.ts < ttl) return cached;
   }
 
+  // Step 2: in-flight deduplication. If a lookup is already running for
+  // this host, return the same Promise so both callers share one result.
+  // Force-mode bypasses this so "Re-check" always starts a fresh pipeline.
+  if (!force && pending.has(host)) return pending.get(host);
+
+  const promise = performLookup(host, force);
+  if (!force) pending.set(host, promise);
+  try {
+    return await promise;
+  } finally {
+    pending.delete(host);
+  }
+}
+
+// The actual lookup work, called exclusively by evaluateHost. Separated so
+// evaluateHost can register the Promise in `pending` before awaiting it.
+async function performLookup(host, force) {
   const settings = await getSettings();
 
-  // History fast-path: if the user has opted into history and the fast-path
-  // setting, we can skip the DoH lookup entirely for sites we already know
-  // support ECH. Bypassed when force=true so "Re-check" always does a live
-  // DNS query regardless of what the history says.
+  // History fast-path: O(1) in-memory Set check instead of decrypting the
+  // full history blob on every navigation. Bypassed when force=true so
+  // "Re-check" always issues a live DNS query.
   if (!force && settings.historyFastPath && settings.keepHistory) {
-    const known = await isKnownEchHost(host).catch(() => false);
-    if (known) {
+    const set = await getEchHostSet();
+    if (set.has(host)) {
       const histResult = {
         host,
         status: STATUS.HISTORY,
@@ -391,11 +435,9 @@ async function evaluateHost(host, { force = false } = {}) {
     const hasPerm = await chrome.permissions.contains({ origins: ["https://*/*"] }).catch(() => false);
     if (hasPerm) {
       const trace = await probeCloudflareTrace(host);
-      if (trace) {
-        if (trace.sni) {
-          result.sni = trace.sni;
-          if (trace.sni === "encrypted") result.status = STATUS.CONFIRMED;
-        }
+      if (trace && trace.sni) {
+        result.sni = trace.sni;
+        if (trace.sni === "encrypted") result.status = STATUS.CONFIRMED;
       }
     }
   }
@@ -409,6 +451,9 @@ async function evaluateHost(host, { force = false } = {}) {
     // Fire-and-forget; history failures must never break the main flow.
     // Only the hostname is handed off — no timestamps, no status.
     recordEchHost(host).catch(() => {});
+    // Optimistically update the in-memory Set so the fast-path can serve
+    // this host on the next navigation without touching IDB or crypto.
+    if (echHostSet) echHostSet.add(host);
   }
 
   return result;
@@ -522,11 +567,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       if (msg && msg.type === "removeHistory") {
         await removeEchHost(msg.host);
+        if (echHostSet) echHostSet.delete(msg.host);
         sendResponse({ ok: true });
         return;
       }
       if (msg && msg.type === "clearHistory") {
         await clearEchHistory();
+        echHostSet = null; // rebuild lazily on next fast-path check
         sendResponse({ ok: true });
         return;
       }
