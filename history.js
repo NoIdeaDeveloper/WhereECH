@@ -295,17 +295,6 @@ export function removeEchHost(host) {
   });
 }
 
-// Returns true if the hostname is already recorded in the encrypted history.
-// Used by the background service worker to skip a DoH lookup when the result
-// is already known from a previous session.
-export function isKnownEchHost(host) {
-  return withLock(async () => {
-    if (!isPlausibleHost(host)) return false;
-    const { entries } = await loadEntriesRaw();
-    return entries.some((e) => e.host === host);
-  });
-}
-
 // Wipes ALL history. The order matters: first we remove the ciphertext
 // blob from chrome.storage.local, then we destroy the key. If that key
 // deletion were skipped (or reversed), any leftover ciphertext copy on

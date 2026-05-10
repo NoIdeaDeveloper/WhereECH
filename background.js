@@ -119,15 +119,23 @@ const pending = new Map(); // host → Promise<result>
 // of decrypting and JSON-parsing the full history blob on every navigation
 // when the history fast-path is enabled — a Set.has() is O(1) in memory.
 let echHostSet = null;
+let echHostSetLoading = null;
 
 // Populate echHostSet from the encrypted history store on first use, then
-// cache the result. A catch-all prevents a decryption failure from breaking
-// the whole fast-path (the lookup falls through to a live DoH query instead).
+// cache the result. Concurrent callers share the same single-decrypt promise
+// rather than each decrypting the blob independently. A catch-all prevents
+// a decryption failure from breaking the whole fast-path (the lookup falls
+// through to a live DoH query instead).
 async function getEchHostSet() {
   if (echHostSet !== null) return echHostSet;
-  const entries = await listEchHosts().catch(() => []);
-  echHostSet = new Set(entries.map(e => e.host));
-  return echHostSet;
+  if (!echHostSetLoading) {
+    echHostSetLoading = (async () => {
+      const entries = await listEchHosts().catch(() => []);
+      echHostSet = new Set(entries.map(e => e.host));
+      return echHostSet;
+    })();
+  }
+  return echHostSetLoading;
 }
 
 // Lets us correlate an async lookup that finishes late with the tab it
@@ -579,7 +587,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       if (msg && msg.type === "clearHistory") {
         await clearEchHistory();
-        echHostSet = null; // rebuild lazily on next fast-path check
+        echHostSet = null;
+        echHostSetLoading = null;
         sendResponse({ ok: true });
         return;
       }

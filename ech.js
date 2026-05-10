@@ -147,6 +147,7 @@ function parseWire(data) {
         let p = 0;
         while (p < v.length) {
           const n = v[p++];
+          if (n === 0) continue;
           if (p + n > v.length) break;
           out.alpn.push(new TextDecoder().decode(v.subarray(p, p + n)));
           p += n;
