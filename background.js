@@ -453,7 +453,13 @@ async function performLookup(host, force) {
     recordEchHost(host).catch(() => {});
     // Optimistically update the in-memory Set so the fast-path can serve
     // this host on the next navigation without touching IDB or crypto.
-    if (echHostSet) echHostSet.add(host);
+    // If the set hasn't been initialized yet, lazily populate it first so
+    // this host is included.
+    if (echHostSet) {
+      echHostSet.add(host);
+    } else {
+      getEchHostSet().then(set => set.add(host)).catch(() => {});
+    }
   }
 
   return result;
@@ -522,7 +528,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 // the main page you're looking at — not ad trackers embedded in it.
 chrome.webNavigation.onCommitted.addListener((details) => {
   if (details.frameId !== 0) return;
-  handleNavigation(details.tabId, details.url);
+  handleNavigation(details.tabId, details.url).catch(() => {});
 });
 
 // Clean up per-tab state when a tab closes. Nothing persistent lives in

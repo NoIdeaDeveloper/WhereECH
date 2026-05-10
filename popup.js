@@ -110,10 +110,15 @@ function render(resp) {
   $("rr").textContent = (r.rrRaw && r.rrRaw.length) ? r.rrRaw.join("\n\n") : "(none)";
 }
 
+let requestInFlight = false;
+
 function request(force = false) {
+  if (requestInFlight) return;
+  requestInFlight = true;
   setHero("unknown", "Checking…");
   $("recheck").classList.add("loading");
   chrome.runtime.sendMessage({ type: "getForTab", force }, (resp) => {
+    requestInFlight = false;
     $("recheck").classList.remove("loading");
     if (chrome.runtime.lastError) {
       render({ ok: false, error: chrome.runtime.lastError.message });
