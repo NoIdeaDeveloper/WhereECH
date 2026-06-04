@@ -341,6 +341,15 @@ async function probeCloudflareTrace(host) {
   }
 }
 
+// Maximum time the entire lookup pipeline may take. Individual network
+// calls have their own shorter AbortController timeouts (5 s for DoH,
+// 3 s for the trace probe), but this outer bound catches cases where
+// the pipeline stalls before reaching the network — e.g. a hung
+// IndexedDB read or an await that never resolves. If this fires, the
+// caller gets a neutral "unknown" result rather than an indefinite
+// "Checking…" badge.
+const PIPELINE_TIMEOUT_MS = 15000;
+
 // The main pipeline: takes a hostname, returns its ECH status.
 //
 // Flow:
@@ -373,12 +382,34 @@ async function evaluateHost(host, { force = false } = {}) {
   // Force-mode bypasses this so "Re-check" always starts a fresh pipeline.
   if (!force && pending.has(host)) return pending.get(host);
 
-  const promise = performLookup(host, force);
+  const promise = performLookupWithTimeout(host, force);
   if (!force) pending.set(host, promise);
   try {
     return await promise;
   } finally {
     pending.delete(host);
+  }
+}
+
+// Wraps performLookup with an overall timeout so the badge never gets
+// stuck on "Checking…" if something in the pipeline hangs.
+async function performLookupWithTimeout(host, force) {
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error("Lookup timed out")), PIPELINE_TIMEOUT_MS)
+  );
+  try {
+    return await Promise.race([performLookup(host, force), timeout]);
+  } catch (e) {
+    return {
+      host,
+      status: STATUS.UNKNOWN,
+      ts: Date.now(),
+      rrRaw: [],
+      summary: null,
+      sni: null,
+      error: String(e && e.message || e),
+      resolver: "unknown",
+    };
   }
 }
 
@@ -543,6 +574,18 @@ chrome.webNavigation.onCommitted.addListener((details) => {
 // tabHost, so this is just housekeeping for the in-memory Map.
 chrome.tabs.onRemoved.addListener((tabId) => tabHost.delete(tabId));
 
+// Keyboard shortcut handler: re-check the active tab when the user
+// presses the configured shortcut (Ctrl+Shift+E / MacCtrl+Shift+E).
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command !== "recheck") return;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab && tab.url && !shouldSkipUrl(tab.url)) {
+    const host = new URL(tab.url).hostname;
+    const result = await evaluateHost(host, { force: true });
+    if (tab.id != null) await setBadge(tab.id, result.status);
+  }
+});
+
 // Message handler for the popup and options pages. Chrome restricts
 // chrome.runtime.onMessage to intra-extension senders by default (this
 // extension does NOT declare externally_connectable), so no website and
@@ -580,6 +623,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return;
       }
       if (msg && msg.type === "removeHistory") {
+        if (typeof msg.host !== "string" || !msg.host) {
+          sendResponse({ ok: false, error: "invalid host" });
+          return;
+        }
         await removeEchHost(msg.host);
         if (echHostSet) echHostSet.delete(msg.host);
         sendResponse({ ok: true });

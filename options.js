@@ -263,6 +263,10 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   $("keepHistory").addEventListener("change", async (e) => {
+    if (!e.target.checked && confirm("Delete existing ECH history? This cannot be undone.")) {
+      await sendMessage({ type: "clearHistory" });
+      await refreshHistory();
+    }
     await save({ keepHistory: e.target.checked });
     updateHistoryFastPathVisibility(e.target.checked, $("historyFastPath").checked);
   });

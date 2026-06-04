@@ -279,8 +279,12 @@ export function listEchHosts() {
     const { entries } = await loadEntriesRaw();
     // Normalize: tolerate older blobs that may contain extra fields
     // (firstSeen/lastSeen/hits/status from pre-1.1.1 installs) by
-    // projecting to just the hostname on the way out.
-    return entries.slice().reverse().map((e) => ({ host: e.host }));
+    // projecting to just the hostname on the way out. Use reduceRight
+    // to avoid creating an intermediate copy via slice().reverse().
+    return entries.reduceRight((acc, e) => {
+      acc.push({ host: e.host });
+      return acc;
+    }, []);
   });
 }
 

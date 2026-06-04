@@ -157,6 +157,13 @@ main {
 .hero[data-state="unknown"]    { --accent: var(--amber); border-color: color-mix(in srgb, var(--amber) 35%, var(--border)); }
 .hero[data-state="skipped"]    { --accent: var(--slate); }
 
+.host-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  animation: rise-in .4s .12s var(--ease) both;
+}
 .host {
   font-size: 15px;
   font-weight: 600;
@@ -165,8 +172,17 @@ main {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-bottom: 10px;
-  animation: rise-in .4s .12s var(--ease) both;
+  flex: 1;
+  min-width: 0;
+}
+.host-row .icon-btn {
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity .15s var(--ease);
+}
+.host-row:hover .icon-btn,
+.host-row .icon-btn:focus-visible {
+  opacity: 1;
 }
 
 /* ----- Status pill ----- */

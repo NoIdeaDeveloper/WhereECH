@@ -132,6 +132,14 @@ document.addEventListener("DOMContentLoaded", () => {
   request(false);
   $("recheck").addEventListener("click", () => request(true));
   $("open-options").addEventListener("click", () => chrome.runtime.openOptionsPage());
+  $("copy-host").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText($("host").textContent || "");
+      const btn = $("copy-host");
+      btn.title = "Copied!";
+      setTimeout(() => { btn.title = "Copy hostname"; }, 1200);
+    } catch {}
+  });
   $("copy-rr").addEventListener("click", async () => {
     try {
       await navigator.clipboard.writeText($("rr").textContent || "");

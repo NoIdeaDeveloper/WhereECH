@@ -37,6 +37,15 @@
     "page": "options.html",
     "open_in_tab": true
   },
+  "commands": {
+    "recheck": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+E",
+        "mac": "MacCtrl+Shift+E"
+      },
+      "description": "Re-check current site for ECH"
+    }
+  },
   "content_security_policy": {
     "extension_pages": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src https:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
   }
