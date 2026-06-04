@@ -394,8 +394,9 @@ async function evaluateHost(host, { force = false } = {}) {
 // Wraps performLookup with an overall timeout so the badge never gets
 // stuck on "Checking…" if something in the pipeline hangs.
 async function performLookupWithTimeout(host, force) {
+  let timer;
   const timeout = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error("Lookup timed out")), PIPELINE_TIMEOUT_MS)
+    timer = setTimeout(() => reject(new Error("Lookup timed out")), PIPELINE_TIMEOUT_MS)
   );
   try {
     return await Promise.race([performLookup(host, force), timeout]);
@@ -410,6 +411,8 @@ async function performLookupWithTimeout(host, force) {
       error: String(e && e.message || e),
       resolver: "unknown",
     };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
