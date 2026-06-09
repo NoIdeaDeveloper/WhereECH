@@ -116,9 +116,13 @@ function request(force = false) {
   if (requestInFlight) return;
   requestInFlight = true;
   setHero("unknown", "Checking…");
+  // Mark the view busy so assistive tech announces the pending lookup and
+  // doesn't read the stale result mid-update.
+  $("app").setAttribute("aria-busy", "true");
   $("recheck").classList.add("loading");
   chrome.runtime.sendMessage({ type: "getForTab", force }, (resp) => {
     requestInFlight = false;
+    $("app").setAttribute("aria-busy", "false");
     $("recheck").classList.remove("loading");
     if (chrome.runtime.lastError) {
       render({ ok: false, error: chrome.runtime.lastError.message });

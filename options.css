@@ -162,6 +162,19 @@ h2 {
   margin: 6px 0 0 24px;
 }
 
+.hint.warn {
+  color: var(--fg-2);
+  background: rgba(185,28,28,.06);
+  border-left: 3px solid #b91c1c;
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin-left: 24px;
+}
+.hint.warn strong { color: var(--fg); }
+@media (prefers-color-scheme: dark) {
+  .hint.warn { background: rgba(248,113,113,.08); border-left-color: #f87171; }
+}
+
 .hidden { display: none !important; }
 
 .sub-opt {

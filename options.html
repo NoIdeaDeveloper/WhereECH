@@ -73,8 +73,14 @@
         WhereECH verify ECH was really used, but only on Cloudflare-hosted sites.
       </p>
       <p class="hint">
-        Cost: one extra request per page to the site you're visiting. Requires permission to read
-        responses from any host (you'll be prompted).
+        Cost: one extra request per page to the site you're visiting.
+      </p>
+      <p class="hint warn">
+        <strong>Permission required.</strong> Enabling this grants WhereECH permission to read
+        responses from <strong>every HTTPS website you visit</strong> (<code>https://*/*</code>) —
+        the broadest privilege the extension can hold. It's needed because the trace probe has to
+        run on whatever Cloudflare-hosted site you land on, which can't be known in advance. You'll
+        be prompted to approve it, and you can revoke it at any time by turning this off.
       </p>
       <label class="opt">
         <input type="checkbox" id="traceProbe">

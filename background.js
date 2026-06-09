@@ -64,7 +64,10 @@ const STATUS = {
 // other host unless the user explicitly grants extra permissions.
 const DOH_PROVIDERS = {
   cloudflare: "https://cloudflare-dns.com/dns-query",
-  quad9: "https://dns.quad9.net:5053/dns-query",
+  // Quad9's secured endpoint on 443: blocklist of known-malicious domains,
+  // no EDNS Client Subnet. (The :5053 variant is the *unsecured*, no-blocklist
+  // service — it would contradict the "blocks malicious domains" UI label.)
+  quad9: "https://dns.quad9.net/dns-query",
   controld: "https://freedns.controld.com/p0",
 };
 
@@ -147,8 +150,18 @@ const tabHost = new Map(); // tabId -> host
 // persistent configuration the extension uses; it never syncs anywhere,
 // never leaves the device, and is scoped to this extension's own storage
 // area — other extensions and websites cannot read it.
+// Memoized in-memory copy of the merged settings. The service worker reads
+// settings on every navigation (handleNavigation) and again inside the lookup
+// pipeline (performLookup); without this memo that's two storage reads per
+// page load on the hot path. The cache is invalidated whenever any local
+// storage key changes (see chrome.storage.onChanged below) and is naturally
+// empty after a worker restart, so it can never serve stale config across a
+// settings change.
+let cachedSettings = null;
 async function getSettings() {
-  return chrome.storage.local.get(DEFAULTS); // get() with defaults already merges
+  if (cachedSettings) return cachedSettings;
+  cachedSettings = await chrome.storage.local.get(DEFAULTS); // get() with defaults already merges
+  return cachedSettings;
 }
 
 // Detects raw IP literals so we don't do a useless DNS lookup on them.
@@ -438,9 +451,13 @@ async function performLookup(host, force) {
         resolver: settings.resolver,
       };
       cacheSet(host, histResult);
-      // Touch the LRU so a site visited only via the fast-path doesn't get
-      // evicted from history before sites that triggered a live DNS lookup.
-      recordEchHost(host).catch(() => {});
+      // Intentionally NOT re-recording here. Touching the LRU via
+      // recordEchHost would force a full decrypt + re-encrypt + storage write
+      // on every cache-miss navigation to a known host — exactly the cost this
+      // fast-path exists to avoid. The trade-off: fast-path hits no longer
+      // refresh history recency, so an entry only moves to the most-recent
+      // slot when a live DoH lookup (cache expiry, Re-check, or first visit)
+      // re-confirms it. Eviction only matters at the MAX_ENTRIES cap anyway.
       return histResult;
     }
   }
@@ -559,6 +576,8 @@ async function handleNavigation(tabId, url) {
 // so the popup never displays stale resolver/probe metadata.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
+  // Any local change may have touched a setting, so drop the memoized copy.
+  cachedSettings = null;
   if (changes.resolver || changes.customResolver || changes.nextdnsId || changes.traceProbe || changes.historyFastPath || changes.keepHistory) {
     cache.clear();
   }
@@ -579,14 +598,18 @@ chrome.tabs.onRemoved.addListener((tabId) => tabHost.delete(tabId));
 
 // Keyboard shortcut handler: re-check the active tab when the user
 // presses the configured shortcut (Ctrl+Shift+E / MacCtrl+Shift+E).
-chrome.commands.onCommand.addListener(async (command) => {
+chrome.commands.onCommand.addListener((command) => {
   if (command !== "recheck") return;
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tab && tab.url && !shouldSkipUrl(tab.url)) {
-    const host = new URL(tab.url).hostname;
-    const result = await evaluateHost(host, { force: true });
-    if (tab.id != null) await setBadge(tab.id, result.status);
-  }
+  // Wrapped so a rejected chrome.* call (e.g. tabs.query) can't surface as an
+  // unhandled promise rejection in the service worker.
+  (async () => {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab && tab.url && !shouldSkipUrl(tab.url)) {
+      const host = new URL(tab.url).hostname;
+      const result = await evaluateHost(host, { force: true });
+      if (tab.id != null) await setBadge(tab.id, result.status);
+    }
+  })().catch(() => {});
 });
 
 // Message handler for the popup and options pages. Chrome restricts
@@ -632,6 +655,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         await removeEchHost(msg.host);
         if (echHostSet) echHostSet.delete(msg.host);
+        // Drop any cached result for this host so a stale STATUS.HISTORY badge
+        // doesn't keep showing "ECH supported" for up to SUCCESS_TTL_MS after
+        // the entry was removed from history.
+        cache.delete(msg.host);
         sendResponse({ ok: true });
         return;
       }
@@ -639,6 +666,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await clearEchHistory();
         echHostSet = null;
         echHostSetLoading = null;
+        // Purge cached STATUS.HISTORY results so no host keeps showing a stale
+        // "ECH supported" badge after the whole list is wiped.
+        cache.clear();
         sendResponse({ ok: true });
         return;
       }

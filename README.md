@@ -9,6 +9,7 @@ Without ECH, even though page contents are encrypted, the site name still leaks 
 - **Toolbar badge** — green `ECH` when a site advertises ECH, gray `—` when it doesn't, `?` if the lookup failed.
 - **Multiple DoH resolvers** — Cloudflare, Quad9, Control D, NextDNS (with your personal profile), or any custom JSON DoH endpoint.
 - **Privacy mode** — disable automatic lookups so DNS queries only happen when you explicitly click the toolbar icon.
+- **Keyboard shortcut** — re-check the current site with `Ctrl+Shift+E` (`MacCtrl+Shift+E` on macOS). If that combination is already taken by another extension, Chrome leaves it unbound; you can assign your own at `chrome://extensions/shortcuts`.
 - **ECH outer name** — shows the public name from each site's ECH configuration (e.g. `cloudflare-ech.com` for Cloudflare-hosted sites vs. a self-hosted domain), so you can see whose infrastructure is providing the ECH layer.
 - **Optional Cloudflare trace confirmation** — for Cloudflare-hosted sites, verify via `/cdn-cgi/trace` that your actual connection used ECH (not just that the site offers it).
 

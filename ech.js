@@ -34,6 +34,24 @@
 
 const KEY_ALPN = 1, KEY_PORT = 3, KEY_IPV4 = 4, KEY_ECH = 5, KEY_IPV6 = 6;
 
+// Split a comma-separated SvcParamValue (e.g. the alpn list) on UNescaped
+// commas, honoring RFC 9460 §A.1 character-string escaping: a backslash makes
+// the next character literal, so `\,` is a comma inside a value rather than a
+// separator and `\\` is a literal backslash. A naive value.split(",") would
+// mis-split protocol IDs that contain escaped commas.
+function splitEscaped(value) {
+  const out = [];
+  let cur = "";
+  for (let i = 0; i < value.length; i++) {
+    const c = value[i];
+    if (c === "\\" && i + 1 < value.length) { cur += value[++i]; continue; }
+    if (c === ",") { out.push(cur); cur = ""; continue; }
+    cur += c;
+  }
+  out.push(cur);
+  return out;
+}
+
 function emptySummary(priority = 0) {
   return { priority, alpn: [], port: null, ipv4: [], ipv6: [], echLength: null, echPublicName: null };
 }
@@ -211,7 +229,7 @@ function parsePresentation(data) {
     const value = eq === -1 ? "" : tok.slice(eq + 1).replace(/^"|"$/g, "");
     switch (name) {
       case "alpn":
-        out.alpn = value.split(",").map(s => s.trim()).filter(Boolean).slice(0, 20);
+        out.alpn = splitEscaped(value).map(s => s.trim()).filter(Boolean).slice(0, 20);
         break;
       case "port":
         out.port = parseInt(value, 10) || null;
