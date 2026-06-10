@@ -52,9 +52,11 @@ const FAILURE_TTL_MS = 30 * 1000;
 const STATUS = {
   ADVERTISED: "advertised",
   CONFIRMED: "confirmed",
+  OFFERED: "offered",       // ECH in DNS but trace probe says it wasn't negotiated
   NOT_ADVERTISED: "not_advertised",
   HISTORY: "history",
   UNKNOWN: "unknown",
+  CHECKING: "checking",     // lookup in flight — transient, never stored in cache
   SKIPPED: "skipped",
 };
 
@@ -227,54 +229,125 @@ function resolverUrl(settings) {
   return parsed.toString();
 }
 
-// Performs exactly one DNS-over-HTTPS query for a single hostname.
+// Performs exactly one DNS-over-HTTPS query using RFC 8484 wireformat GET.
+//
+// Why RFC 8484 instead of the earlier JSON DoH format:
+//   RFC 8484 (dns-message) is the IETF standard and is supported by every
+//   major DoH provider. The JSON format (application/dns-json) was a
+//   non-standard extension used by Cloudflare and Google but never
+//   standardised; Quad9 retired their JSON endpoint in May 2025, and
+//   ControlD returns binary wireformat regardless of the Accept header.
+//   Switching to RFC 8484 makes all four built-in resolvers work correctly
+//   and removes the limitation on which custom resolvers users can use.
 //
 // What it sends:
-//   A single GET request with two query parameters: name=<the hostname>
-//   and type=HTTPS. That's it. The hostname is the only piece of user-
-//   derived data that leaves the device on this call, and it goes to
-//   exactly one host — whichever DoH provider you picked in Settings.
+//   A single GET request with one query parameter: dns=<base64url-encoded
+//   DNS query message>. The DNS message asks for the HTTPS record (type 65)
+//   of the hostname. That is the only piece of user-derived data that leaves
+//   the device, and it goes to exactly one host.
 //
 // What it does NOT send:
 //   * No cookies (credentials: "omit")
 //   * No Referer header (referrerPolicy: "no-referrer")
-//   * No User-Agent extras, no custom fingerprinting headers
-//   * No request body
-//   * No follow-up requests: redirects are refused (redirect: "error"),
-//     so a malicious or compromised resolver cannot bounce us to a
-//     tracking URL on another domain.
+//   * No custom fingerprinting headers
+//   * No request body; redirects refused (redirect: "error")
 //
 // Failure-mode guarantees:
-//   * A 5-second AbortController timeout prevents hung requests from
-//     leaking resources.
-//   * HTTP errors throw and are converted upstream into a neutral
-//     "unknown" status — no data is logged, nothing is retried.
+//   * 5-second AbortController timeout; 64 KB response size cap.
+
+// Build a minimal DNS query wire message for an HTTPS (type 65) lookup.
+function buildDnsQuery(host) {
+  const labels = host.split(".");
+  let qnameLen = 1; // root 0x00
+  for (const l of labels) qnameLen += 1 + l.length;
+  const buf = new Uint8Array(12 + qnameLen + 4); // header + qname + qtype + qclass
+  const view = new DataView(buf.buffer);
+  view.setUint16(0, (Math.random() * 0xffff) >>> 0); // random ID (reply-matching only)
+  view.setUint16(2, 0x0100); // flags: RD=1
+  view.setUint16(4, 1); // QDCOUNT=1
+  let off = 12;
+  for (const l of labels) {
+    buf[off++] = l.length;
+    for (let i = 0; i < l.length; i++) buf[off++] = l.charCodeAt(i);
+  }
+  buf[off++] = 0; // root label
+  view.setUint16(off, 65); off += 2; // QTYPE=HTTPS
+  view.setUint16(off, 1); // QCLASS=IN
+  return buf;
+}
+
+// RFC 4648 §5 base64url without padding — required by RFC 8484.
+function base64url(bytes) {
+  let s = "";
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// Skip a DNS name (labels or a 2-byte pointer) starting at `off`.
+// Returns the offset immediately after the name. Does NOT follow pointers —
+// we only need to advance past names, not resolve them.
+function skipDnsName(msg, off) {
+  while (off < msg.length) {
+    const len = msg[off];
+    if (len === 0) return off + 1;
+    if ((len & 0xc0) === 0xc0) return off + 2; // pointer: fixed 2-byte hop
+    off += 1 + len;
+  }
+  return off;
+}
+
+// Parse a DNS wire-format response and return the RDATA of every type-65
+// (HTTPS) record in the Answer section as hex-formatted wire strings that
+// ech.js already knows how to parse (the `\# len hex` presentation form).
+function parseDnsResponse(buf) {
+  const msg = new Uint8Array(buf);
+  if (msg.length < 12) return [];
+  const view = new DataView(buf);
+  const qdcount = view.getUint16(4);
+  const ancount = view.getUint16(6);
+  let off = 12;
+  for (let i = 0; i < qdcount && off < msg.length; i++) {
+    off = skipDnsName(msg, off);
+    off += 4; // QTYPE + QCLASS
+  }
+  const results = [];
+  for (let i = 0; i < ancount && off + 10 <= msg.length; i++) {
+    off = skipDnsName(msg, off);
+    if (off + 10 > msg.length) break;
+    const type = view.getUint16(off); off += 2;
+    off += 6; // CLASS(2) + TTL(4)
+    const rdlen = view.getUint16(off); off += 2;
+    if (off + rdlen > msg.length) break;
+    if (type === 65) {
+      const rdata = msg.slice(off, off + rdlen);
+      let hex = "";
+      for (let j = 0; j < rdata.length; j++) hex += rdata[j].toString(16).padStart(2, "0");
+      results.push(`\\# ${rdata.length} ${hex}`);
+    }
+    off += rdlen;
+  }
+  return results;
+}
+
 async function dohLookupHttpsRR(host, settings) {
-  // Build URL safely so a custom resolver with an existing query string still works.
   const url = new URL(resolverUrl(settings));
-  url.searchParams.set("name", host);
-  url.searchParams.set("type", "HTTPS");
+  url.searchParams.set("dns", base64url(buildDnsQuery(host)));
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 5000);
   try {
     const res = await fetch(url.toString(), {
-      headers: { Accept: "application/dns-json" },
+      headers: { Accept: "application/dns-message" },
       credentials: "omit",
       cache: "no-store",
       referrerPolicy: "no-referrer",
-      redirect: "error", // refuse 3xx — a malicious resolver can't bounce us to a tracker
+      redirect: "error",
       signal: ctrl.signal,
     });
     if (!res.ok) throw new Error(`DoH HTTP ${res.status}`);
-    // Cap the response body. A well-formed DoH JSON answer is typically a
-    // few hundred bytes; 64 KB is generous while still preventing a
-    // compromised resolver from making us buffer megabytes into memory.
-    const text = await res.text();
-    if (text.length > 65536) throw new Error("DoH response too large");
-    const json = JSON.parse(text);
-    const answers = (json.Answer || []).filter(a => a.type === 65);
-    return answers.map(a => a.data);
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength > 65536) throw new Error("DoH response too large");
+    return parseDnsResponse(buf);
   } finally {
     clearTimeout(timer);
   }
@@ -400,7 +473,10 @@ async function evaluateHost(host, { force = false } = {}) {
   try {
     return await promise;
   } finally {
-    pending.delete(host);
+    // Only delete when we registered the entry. A force lookup never writes
+    // to `pending`, so deleting unconditionally would evict a concurrent
+    // normal lookup's entry and cause a duplicate DoH query for it.
+    if (!force) pending.delete(host);
   }
 }
 
@@ -496,7 +572,12 @@ async function performLookup(host, force) {
       const trace = await probeCloudflareTrace(host);
       if (trace && trace.sni) {
         result.sni = trace.sni;
-        if (trace.sni === "encrypted") result.status = STATUS.CONFIRMED;
+        if (trace.sni === "encrypted") {
+          result.status = STATUS.CONFIRMED;
+        } else if (trace.sni === "plaintext" && result.status === STATUS.ADVERTISED) {
+          // ECH key is in DNS but this connection didn't use it.
+          result.status = STATUS.OFFERED;
+        }
       }
     }
   }
@@ -505,7 +586,7 @@ async function performLookup(host, force) {
 
   if (
     settings.keepHistory &&
-    (result.status === STATUS.ADVERTISED || result.status === STATUS.CONFIRMED)
+    (result.status === STATUS.ADVERTISED || result.status === STATUS.CONFIRMED || result.status === STATUS.OFFERED)
   ) {
     // Fire-and-forget; history failures must never break the main flow.
     // Only the hostname is handed off — no timestamps, no status.
@@ -526,21 +607,37 @@ async function performLookup(host, force) {
 
 function badgeFor(status) {
   switch (status) {
-    case STATUS.CONFIRMED: return { text: "ECH", color: "#1a7f37" };
-    case STATUS.ADVERTISED: return { text: "ECH", color: "#2da44e" };
-    case STATUS.HISTORY: return { text: "ECH", color: "#2da44e" };
-    case STATUS.NOT_ADVERTISED: return { text: "—", color: "#6e7781" };
-    case STATUS.SKIPPED: return { text: "", color: "#6e7781" };
+    case STATUS.CONFIRMED:     return { text: "ECH", color: "#1a7f37" };
+    case STATUS.ADVERTISED:    return { text: "ECH", color: "#2da44e" };
+    case STATUS.HISTORY:       return { text: "ECH", color: "#2da44e" };
+    case STATUS.OFFERED:       return { text: "ECH", color: "#d97706" }; // amber — offered but not negotiated
+    case STATUS.NOT_ADVERTISED:return { text: "—",   color: "#6e7781" };
+    case STATUS.CHECKING:      return { text: "",    color: "#0969da" }; // no badge while in flight
+    case STATUS.SKIPPED:       return { text: "",    color: "#6e7781" };
     case STATUS.UNKNOWN:
-    default: return { text: "?", color: "#bf8700" };
+    default:                   return { text: "?",   color: "#bf8700" };
   }
 }
 
-async function setBadge(tabId, status) {
+const BADGE_TITLE = {
+  [STATUS.CONFIRMED]:     "ECH confirmed active",
+  [STATUS.OFFERED]:       "ECH offered, not negotiated",
+  [STATUS.ADVERTISED]:    "ECH supported",
+  [STATUS.HISTORY]:       "ECH supported (from history)",
+  [STATUS.NOT_ADVERTISED]:"No ECH support",
+  [STATUS.CHECKING]:      "Checking ECH…",
+  [STATUS.UNKNOWN]:       "ECH check failed",
+  [STATUS.SKIPPED]:       "",
+};
+
+async function setBadge(tabId, status, host) {
   const { text, color } = badgeFor(status);
+  const label = BADGE_TITLE[status] ?? "";
+  const title = host && label ? `${host} — ${label}` : label || "whereECH";
   try {
     await chrome.action.setBadgeText({ tabId, text });
     if (text) await chrome.action.setBadgeBackgroundColor({ tabId, color });
+    await chrome.action.setTitle({ tabId, title });
   } catch {}
 }
 
@@ -565,10 +662,13 @@ async function handleNavigation(tabId, url) {
     await setBadge(tabId, STATUS.SKIPPED);
     return;
   }
-  await setBadge(tabId, STATUS.UNKNOWN);
+  // STATUS.CHECKING shows no badge text (blank icon) while the lookup runs,
+  // so the amber "?" only appears when a lookup actually fails — never as a
+  // transient loading indicator.
+  await setBadge(tabId, STATUS.CHECKING, host);
   const result = await evaluateHost(host);
   if (tabHost.get(tabId) === host) {
-    await setBadge(tabId, result.status);
+    await setBadge(tabId, result.status, host);
   }
 }
 
@@ -576,8 +676,10 @@ async function handleNavigation(tabId, url) {
 // so the popup never displays stale resolver/probe metadata.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
-  // Any local change may have touched a setting, so drop the memoized copy.
-  cachedSettings = null;
+  // Only drop the settings memo when an actual settings key changed, not on
+  // every historyBlob write — which would re-read storage on every navigation
+  // to a new ECH site when history is enabled.
+  if (Object.keys(changes).some(k => k in DEFAULTS)) cachedSettings = null;
   if (changes.resolver || changes.customResolver || changes.nextdnsId || changes.traceProbe || changes.historyFastPath || changes.keepHistory) {
     cache.clear();
   }
@@ -607,7 +709,7 @@ chrome.commands.onCommand.addListener((command) => {
     if (tab && tab.url && !shouldSkipUrl(tab.url)) {
       const host = new URL(tab.url).hostname;
       const result = await evaluateHost(host, { force: true });
-      if (tab.id != null) await setBadge(tab.id, result.status);
+      if (tab.id != null) await setBadge(tab.id, result.status, host);
     }
   })().catch(() => {});
 });
@@ -634,7 +736,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         const host = new URL(tab.url).hostname;
         const result = await evaluateHost(host, { force: !!msg.force });
-        if (tab.id != null) await setBadge(tab.id, result.status);
+        if (tab.id != null) await setBadge(tab.id, result.status, host);
         sendResponse({ ok: true, result });
         return;
       }

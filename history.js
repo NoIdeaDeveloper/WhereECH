@@ -264,7 +264,7 @@ export function recordEchHost(host) {
     next.push({ host });
     // Cap the list. We drop from the front (oldest), which is
     // least-recently-seen under the move-to-end rule above.
-    while (next.length > MAX_ENTRIES) next.shift();
+    if (next.length > MAX_ENTRIES) next.splice(0, next.length - MAX_ENTRIES);
     await saveEntries(next);
   });
 }

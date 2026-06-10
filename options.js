@@ -204,6 +204,10 @@ document.addEventListener("DOMContentLoaded", () => {
       if (value === "custom") {
         await ensureCustomResolverPermission();
       }
+      if (value === "nextdns" && !($("nextdnsId").value || "").trim()) {
+        toast("Enter your NextDNS profile ID below");
+        $("nextdnsId").focus();
+      }
       await save({ resolver: value });
     });
   }
@@ -263,9 +267,18 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   $("keepHistory").addEventListener("change", async (e) => {
-    if (!e.target.checked && confirm("Delete existing ECH history? This cannot be undone.")) {
-      await sendMessage({ type: "clearHistory" });
-      await refreshHistory();
+    if (!e.target.checked) {
+      // Only show the destructive confirm if there's something to delete.
+      const resp = await sendMessage({ type: "listHistory" });
+      const hasEntries = resp.ok && resp.entries && resp.entries.length > 0;
+      if (hasEntries) {
+        if (!confirm("Delete existing ECH history? This cannot be undone.")) {
+          e.target.checked = true; // cancelled — restore the checkbox
+          return;
+        }
+        await sendMessage({ type: "clearHistory" });
+        await refreshHistory();
+      }
     }
     await save({ keepHistory: e.target.checked });
     updateHistoryFastPathVisibility(e.target.checked, $("historyFastPath").checked);
@@ -273,6 +286,11 @@ document.addEventListener("DOMContentLoaded", () => {
   $("historyFastPath").addEventListener("change", async (e) => {
     await save({ historyFastPath: e.target.checked });
   });
+  // Keep the permission status label current if the user grants or revokes
+  // host permissions externally (e.g. from chrome://extensions).
+  chrome.permissions.onAdded.addListener(updatePermStatus);
+  chrome.permissions.onRemoved.addListener(updatePermStatus);
+
   $("refreshHistory").addEventListener("click", () => { refreshHistory(); });
   $("clearHistory").addEventListener("click", async () => {
     if (!confirm("Clear the entire ECH site history? This cannot be undone.")) return;

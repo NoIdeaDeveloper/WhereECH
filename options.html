@@ -46,7 +46,7 @@
       <input type="text" id="nextdnsId" aria-label="NextDNS profile ID" placeholder="profile ID, e.g. abc123" autocomplete="off" spellcheck="false" disabled>
       <label class="opt"><input type="radio" name="resolver" value="custom"> Custom — your own DoH endpoint</label>
       <input type="url" id="customResolver" aria-label="Custom DoH resolver URL" placeholder="https://your-resolver.example/dns-query" disabled>
-      <p class="hint">Custom resolvers must be HTTPS and speak the JSON DoH protocol (the same format Cloudflare and NextDNS use).</p>
+      <p class="hint">Custom resolvers must be HTTPS and support RFC 8484 DNS-over-HTTPS (the standard used by Cloudflare, Quad9, NextDNS, Control D, and most other public DoH providers).</p>
     </section>
 
     <section class="card">

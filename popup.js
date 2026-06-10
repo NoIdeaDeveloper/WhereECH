@@ -25,20 +25,24 @@
 
 const STATUS_LABEL = {
   confirmed: "ECH active",
+  offered: "ECH offered, not used",
   advertised: "ECH supported",
   history: "ECH supported",
   not_advertised: "No ECH",
   unknown: "Unavailable",
+  checking: "Checking…",
   skipped: "Not applicable",
 };
 
 const NOTES = {
   confirmed: "Your browser negotiated Encrypted Client Hello with this site. The hostname you visited (the SNI) was hidden from anyone watching the network — only your DNS resolver and the site itself know what you connected to.",
+  offered: "This site publishes an ECH key in DNS, but Cloudflare's trace endpoint reports that your browser did not negotiate ECH on this connection. This can happen if your browser doesn't support ECH or if it was temporarily disabled. Hit Re-check to try again.",
   advertised: "This site publishes an ECH key in DNS, so a browser that supports ECH will use it automatically on the TLS handshake. WhereECH can't see inside your actual handshake, so it can't 100% confirm ECH was used — enable the Cloudflare trace probe in Settings for proof on Cloudflare-hosted sites.",
   history: "This site was found in your ECH history from a previous visit, so WhereECH skipped the DNS lookup. Hit Re-check to run a fresh lookup instead.",
   not_advertised: "This site does not publish an ECH key in DNS. Your browser sent the hostname (SNI) in the clear during the TLS handshake, where any on-path observer could read it. The traffic itself is still encrypted.",
   unknown: "WhereECH couldn't reach the DNS-over-HTTPS resolver. Check your network connection, or pick a different resolver in Settings.",
   skipped: "WhereECH only inspects regular HTTPS websites. Browser pages, local files, and IP-literal addresses don't apply.",
+  skippedHttp: "This page is loaded over plain HTTP, not HTTPS. The hostname is visible to anyone watching the network during both the DNS lookup and the connection — there's no encryption layer for ECH to protect.",
 };
 
 function $(id) { return document.getElementById(id); }
@@ -81,7 +85,8 @@ function render(resp) {
   if (resp.skipped) {
     setHero("skipped", "Not applicable");
     $("host").textContent = "";
-    $("note").textContent = NOTES.skipped;
+    const isHttp = resp.url && resp.url.startsWith("http://");
+    $("note").textContent = isHttp ? NOTES.skippedHttp : NOTES.skipped;
     $("recheck").disabled = true;
     return;
   }
