@@ -9,10 +9,13 @@
 //     feature needs, via the browser's own permission prompt. You can
 //     always say no.
 //   * Sends messages to the background service worker to list, remove,
-//     or clear the encrypted history.
+//     or clear the encrypted history, manage per-site lists, and import
+//     or export settings and history.
 //
 // What this file does NOT do:
-//   * No network I/O whatsoever. It never calls fetch().
+//   * No network I/O whatsoever. It never calls fetch(). (The only
+//     fetch is the background worker fetching CHANGELOG.md for the
+//     "What's new" link — that runs in the service worker, not here.)
 //   * No access to the encryption key. The key lives in the service
 //     worker's IndexedDB; this page can only ask the worker for the
 //     decrypted list via chrome.runtime.sendMessage, which Chrome
@@ -26,35 +29,55 @@
 const DEFAULTS = {
   resolver: "cloudflare",
   customResolver: "",
+  customPresets: [],
   nextdnsId: "",
   autoLookup: true,
   traceProbe: false,
 
   keepHistory: false,
   historyFastPath: false,
+  noCache: false,
+  notifyOnChange: false,
+  compareResolvers: false,
+  allowlist: [],
+  blocklist: [],
+  theme: "system",
 };
 
 const TRACE_ORIGINS = { origins: ["https://*/*"] };
 
 function $(id) { return document.getElementById(id); }
 
+let historyEntries = [];      // last loaded history, newest-first
+let historySortAZ = false;    // false = newest-first (insertion order)
+let historySearchTerm = "";
+
 async function load() {
   const s = await chrome.storage.local.get(DEFAULTS);
   for (const r of document.querySelectorAll('input[name="resolver"]')) {
     r.checked = r.value === s.resolver;
+  }
+  for (const r of document.querySelectorAll('input[name="theme"]')) {
+    r.checked = r.value === s.theme;
   }
   $("customResolver").value = s.customResolver;
   $("customResolver").disabled = s.resolver !== "custom";
   $("nextdnsId").value = s.nextdnsId;
   $("nextdnsId").disabled = s.resolver !== "nextdns";
   $("autoLookup").checked = !!s.autoLookup;
+  $("noCache").checked = !!s.noCache;
   $("traceProbe").checked = !!s.traceProbe;
+  $("compareResolvers").checked = !!s.compareResolvers;
+  $("notifyOnChange").checked = !!s.notifyOnChange;
 
   $("keepHistory").checked = !!s.keepHistory;
   $("historyFastPath").checked = !!s.historyFastPath;
   updateHistoryFastPathVisibility(!!s.keepHistory, !!s.historyFastPath);
+  refreshPresets(s.customPresets || []);
+  await renderLists(s);
   await updatePermStatus();
   await refreshHistory();
+  applyTheme(s.theme || "system");
 }
 
 function sendMessage(msg) {
@@ -77,29 +100,72 @@ function sendMessage(msg) {
 async function refreshHistory() {
   const list = $("historyList");
   const empty = $("historyEmpty");
-  list.textContent = "";
-  const resp = await sendMessage({ type: "listHistory" });
-  if (!resp.ok) {
-    empty.textContent = "Couldn't load history: " + (resp.error || "unknown error");
+  const setButtons = (disabled) => {
+    const ids = ["refreshHistory", "clearHistory", "removeSelected", "exportHistory", "importHistory", "selectAllHistory", "historySearch", "sortHistory"];
+    for (const id of ids) $(id).disabled = disabled;
+  };
+  setButtons(true);
+  try {
+    const resp = await sendMessage({ type: "listHistory" });
+    if (!resp.ok) {
+      empty.textContent = "Couldn't load history: " + (resp.error || "unknown error");
+      empty.classList.remove("hidden");
+      historyEntries = [];
+    } else {
+      historyEntries = resp.entries || [];
+    }
+  } catch (e) {
+    empty.textContent = "Couldn't load history: " + String(e && e.message || e);
     empty.classList.remove("hidden");
-    return;
+    historyEntries = [];
   }
-  const entries = resp.entries || [];
-  if (entries.length === 0) {
-    empty.textContent = "No entries yet.";
+  renderHistory();
+  setButtons(false);
+  // Disable Remove Selected unless something is checked.
+  updateRemoveSelectedState();
+}
+
+// Render the current historyEntries filtered by the search term and
+// sorted by the current order. Updates the entry count and the empty
+// state.
+function renderHistory() {
+  const list = $("historyList");
+  const empty = $("historyEmpty");
+  const countEl = $("historyCount");
+  list.textContent = "";
+  const total = historyEntries.length;
+  countEl.textContent = total === 1 ? "1 entry" : `${total} entries`;
+
+  let entries = historyEntries;
+  if (historySearchTerm) {
+    const q = historySearchTerm.toLowerCase();
+    entries = entries.filter((e) => e.host.toLowerCase().includes(q));
+  }
+  const shown = entries.slice();
+  if (historySortAZ) shown.sort((a, b) => a.host.localeCompare(b.host));
+
+  if (shown.length === 0) {
     empty.classList.remove("hidden");
+    empty.textContent = historySearchTerm
+      ? "No entries match your filter."
+      : total === 0
+        ? "No entries yet. Enable history above to start tracking sites that support ECH."
+        : "No entries.";
     return;
   }
   empty.classList.add("hidden");
-  for (const e of entries) {
+
+  const fragment = document.createDocumentFragment();
+  for (const e of shown) {
     const li = document.createElement("li");
     li.className = "history-item";
 
-    // Each entry is rendered as a plain hyperlink to the site's HTTPS
-    // root. The href is set via the DOM URL API, not string concat, so
-    // the hostname cannot introduce a different scheme or inject
-    // anything into the link target. Link text uses .textContent, so
-    // no HTML interpretation is possible regardless of hostname.
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "history-check";
+    checkbox.dataset.host = e.host;
+    checkbox.addEventListener("change", updateRemoveSelectedState);
+
     const link = document.createElement("a");
     try {
       link.href = new URL(`https://${e.host}/`).toString();
@@ -127,11 +193,57 @@ async function refreshHistory() {
       }
     });
 
+    li.appendChild(checkbox);
     li.appendChild(link);
     li.appendChild(btn);
-    list.appendChild(li);
+    fragment.appendChild(li);
+  }
+  list.appendChild(fragment);
+}
+
+function updateRemoveSelectedState() {
+  const anyChecked = document.querySelectorAll(".history-check:checked").length > 0;
+  $("removeSelected").disabled = !anyChecked;
+  const allCount = document.querySelectorAll(".history-check").length;
+  const checkedCount = document.querySelectorAll(".history-check:checked").length;
+  const selectAll = $("selectAllHistory");
+  if (checkedCount === 0) selectAll.checked = false;
+  else if (checkedCount === allCount) selectAll.checked = true;
+}
+
+// Render the per-site allowlist and blocklist.
+async function renderLists(s) {
+  for (const [name, key] of [["allowlist", "allowlist"], ["blocklist", "blocklist"]]) {
+    const ul = $(`${name}View`);
+    ul.textContent = "";
+    const list = Array.isArray(s[key]) ? s[key] : [];
+    for (const host of list) {
+      const li = document.createElement("li");
+      li.className = "host-list-item";
+      const span = document.createElement("span");
+      span.className = "host-list-host";
+      span.textContent = host;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "ghost-small";
+      btn.textContent = "Remove";
+      btn.addEventListener("click", async () => {
+        const resp = await sendMessage({ type: `remove${cap(name)}`, host });
+        if (resp.ok) {
+          const stored = await chrome.storage.local.get(DEFAULTS);
+          await renderLists(stored);
+        } else {
+          toast("Couldn't remove entry");
+        }
+      });
+      li.appendChild(span);
+      li.appendChild(btn);
+      ul.appendChild(li);
+    }
   }
 }
+
+function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 
 // Ensure host permission is in place for whatever custom resolver URL is
 // currently saved. Called when switching to the custom radio so an upgraded
@@ -144,9 +256,6 @@ async function ensureCustomResolverPermission() {
   try { parsed = new URL(v); } catch { return; }
   if (parsed.protocol !== "https:") return;
   const origin = `${parsed.protocol}//${parsed.host}/*`;
-  // request() is idempotent: it returns true immediately without prompting
-  // if the permission is already held. We avoid an intermediate `contains`
-  // await that could burn the user-gesture needed to show the prompt.
   const granted = await chrome.permissions.request({ origins: [origin] }).catch(() => false);
   if (!granted) {
     toast("Permission denied — lookups to that host will fail");
@@ -172,8 +281,6 @@ function updateHistoryFastPathVisibility(keepHistoryOn, currentFastPath) {
   } else {
     row.classList.add("hidden");
     $("historyFastPath").checked = false;
-    // Only write and notify if fast-path was actually on — avoids a spurious
-    // storage.onChanged that would clear the background cache on every page load.
     if (currentFastPath) {
       chrome.storage.local.set({ historyFastPath: false });
       toast("History fast-path disabled");
@@ -193,14 +300,123 @@ async function save(partial) {
   toast("Saved");
 }
 
+// Show inline error text under the custom resolver input. Pass null/empty
+// to clear the error.
+function setCustomResolverError(msg) {
+  const el = $("customResolverError");
+  if (!msg) {
+    el.classList.add("hidden");
+    el.textContent = "";
+    $("customResolver").classList.remove("invalid");
+    return;
+  }
+  el.classList.remove("hidden");
+  el.textContent = msg;
+  $("customResolver").classList.add("invalid");
+}
+
+// Refresh the preset <select> from settings.
+function refreshPresets(presets) {
+  const sel = $("presetSelect");
+  const cur = sel.value;
+  sel.textContent = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "— choose —";
+  sel.appendChild(placeholder);
+  for (const p of presets) {
+    const opt = document.createElement("option");
+    opt.value = p.url;
+    opt.textContent = p.name || p.url;
+    sel.appendChild(opt);
+  }
+  sel.value = cur;
+}
+
+function applyTheme(theme) {
+  const root = document.documentElement;
+  if (theme === "dark") root.setAttribute("data-theme", "dark");
+  else if (theme === "light") root.setAttribute("data-theme", "light");
+  else root.removeAttribute("data-theme");
+}
+
+// Trigger a download of a JSON object as a file.
+function downloadJson(obj, filename) {
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Read a File as parsed JSON.
+function readJsonFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    reader.onload = () => {
+      try { resolve(JSON.parse(reader.result)); }
+      catch (e) { reject(e); }
+    };
+    reader.readAsText(file);
+  });
+}
+
+function openChangelogModal(text) {
+  const existing = document.getElementById("changelog-modal");
+  if (existing) existing.remove();
+  const overlay = document.createElement("div");
+  overlay.id = "changelog-modal";
+  overlay.className = "modal-overlay";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-label", "What's new");
+  const dialog = document.createElement("div");
+  dialog.className = "modal-dialog";
+  const header = document.createElement("div");
+  header.className = "modal-header";
+  const title = document.createElement("strong");
+  title.textContent = "What's new";
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "icon-btn";
+  close.setAttribute("aria-label", "Close");
+  close.textContent = "×";
+  close.addEventListener("click", () => overlay.remove());
+  header.appendChild(title);
+  header.appendChild(close);
+  const pre = document.createElement("pre");
+  pre.className = "modal-pre";
+  pre.textContent = text;
+  dialog.appendChild(header);
+  dialog.appendChild(pre);
+  overlay.appendChild(dialog);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   load();
+
+  // Theme.
+  for (const r of document.querySelectorAll('input[name="theme"]')) {
+    r.addEventListener("change", async () => {
+      const value = r.value;
+      await save({ theme: value });
+      applyTheme(value);
+    });
+  }
 
   for (const r of document.querySelectorAll('input[name="resolver"]')) {
     r.addEventListener("change", async () => {
       const value = r.value;
       $("customResolver").disabled = value !== "custom";
       $("nextdnsId").disabled = value !== "nextdns";
+      setCustomResolverError(null);
       if (value === "custom") {
         await ensureCustomResolverPermission();
       }
@@ -213,27 +429,24 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   $("customResolver").addEventListener("change", async (e) => {
     const v = e.target.value.trim();
+    setCustomResolverError(null);
     if (!v) {
       await save({ customResolver: "" });
       return;
     }
     let parsed;
     try { parsed = new URL(v); } catch {
-      toast("Resolver URL is invalid");
+      setCustomResolverError("That doesn't look like a valid URL.");
       return;
     }
     if (parsed.protocol !== "https:") {
-      toast("Resolver must be HTTPS");
+      setCustomResolverError("Resolver must be HTTPS.");
       return;
     }
-    // MV3 requires host permission for cross-origin fetch from the service
-    // worker. Without this, lookups against a custom resolver would silently
-    // fail. optional_host_permissions: ["https://*/*"] lets us request any
-    // https origin as a subset.
     const origin = `${parsed.protocol}//${parsed.host}/*`;
     const granted = await chrome.permissions.request({ origins: [origin] }).catch(() => false);
     if (!granted) {
-      toast("Permission for that host was denied");
+      setCustomResolverError("Permission for that host was denied.");
       e.target.value = "";
       await save({ customResolver: "" });
       return;
@@ -251,6 +464,9 @@ document.addEventListener("DOMContentLoaded", () => {
   $("autoLookup").addEventListener("change", async (e) => {
     await save({ autoLookup: e.target.checked });
   });
+  $("noCache").addEventListener("change", async (e) => {
+    await save({ noCache: e.target.checked });
+  });
   $("traceProbe").addEventListener("change", async (e) => {
     if (e.target.checked) {
       const granted = await chrome.permissions.request(TRACE_ORIGINS).catch(() => false);
@@ -265,15 +481,77 @@ document.addEventListener("DOMContentLoaded", () => {
     await save({ traceProbe: e.target.checked });
     await updatePermStatus();
   });
+  $("compareResolvers").addEventListener("change", async (e) => {
+    await save({ compareResolvers: e.target.checked });
+  });
+  $("notifyOnChange").addEventListener("change", async (e) => {
+    await save({ notifyOnChange: e.target.checked });
+  });
 
+  // Per-site lists.
+  $("addAllowlist").addEventListener("click", async () => {
+    const v = $("allowlistInput").value.trim().toLowerCase();
+    if (!v) return;
+    const resp = await sendMessage({ type: "addAllowlist", host: v });
+    if (resp.ok) {
+      $("allowlistInput").value = "";
+      const stored = await chrome.storage.local.get(DEFAULTS);
+      await renderLists(stored);
+    } else {
+      toast("Couldn't add entry");
+    }
+  });
+  $("addBlocklist").addEventListener("click", async () => {
+    const v = $("blocklistInput").value.trim().toLowerCase();
+    if (!v) return;
+    const resp = await sendMessage({ type: "addBlocklist", host: v });
+    if (resp.ok) {
+      $("blocklistInput").value = "";
+      const stored = await chrome.storage.local.get(DEFAULTS);
+      await renderLists(stored);
+    } else {
+      toast("Couldn't add entry");
+    }
+  });
+
+  // Custom resolver presets.
+  $("presetSelect").addEventListener("change", async (e) => {
+    const url = e.target.value;
+    if (!url) return;
+    $("customResolver").value = url;
+    // Trigger the change handler's validation + permission flow.
+    $("customResolver").dispatchEvent(new Event("change"));
+  });
+  $("savePreset").addEventListener("click", async () => {
+    const url = $("customResolver").value.trim();
+    if (!url) { toast("Enter a URL first"); return; }
+    const name = prompt("Name this preset:", url);
+    if (!name) return;
+    const s = await chrome.storage.local.get(DEFAULTS);
+    const presets = (s.customPresets || []).filter((p) => p.url !== url);
+    presets.push({ name, url });
+    await save({ customPresets: presets });
+    refreshPresets(presets);
+  });
+  $("deletePreset").addEventListener("click", async () => {
+    const sel = $("presetSelect");
+    const url = sel.value;
+    if (!url) return;
+    const s = await chrome.storage.local.get(DEFAULTS);
+    const presets = (s.customPresets || []).filter((p) => p.url !== url);
+    await save({ customPresets: presets });
+    refreshPresets(presets);
+    sel.value = "";
+  });
+
+  // History controls.
   $("keepHistory").addEventListener("change", async (e) => {
     if (!e.target.checked) {
-      // Only show the destructive confirm if there's something to delete.
       const resp = await sendMessage({ type: "listHistory" });
       const hasEntries = resp.ok && resp.entries && resp.entries.length > 0;
       if (hasEntries) {
         if (!confirm("Delete existing ECH history? This cannot be undone.")) {
-          e.target.checked = true; // cancelled — restore the checkbox
+          e.target.checked = true;
           return;
         }
         await sendMessage({ type: "clearHistory" });
@@ -286,15 +564,15 @@ document.addEventListener("DOMContentLoaded", () => {
   $("historyFastPath").addEventListener("change", async (e) => {
     await save({ historyFastPath: e.target.checked });
   });
-  // Keep the permission status label current if the user grants or revokes
-  // host permissions externally (e.g. from chrome://extensions).
   chrome.permissions.onAdded.addListener(updatePermStatus);
   chrome.permissions.onRemoved.addListener(updatePermStatus);
 
   $("refreshHistory").addEventListener("click", () => { refreshHistory(); });
-  $("clearHistory").addEventListener("click", async () => {
+  $("clearHistory").addEventListener("click", async (e) => {
     if (!confirm("Clear the entire ECH site history? This cannot be undone.")) return;
+    e.target.disabled = true;
     const r = await sendMessage({ type: "clearHistory" });
+    e.target.disabled = false;
     if (r.ok) {
       toast("History cleared");
       await refreshHistory();
@@ -302,6 +580,89 @@ document.addEventListener("DOMContentLoaded", () => {
       toast("Couldn't clear history");
     }
   });
+  $("historySearch").addEventListener("input", (e) => {
+    historySearchTerm = e.target.value.trim();
+    renderHistory();
+  });
+  $("sortHistory").addEventListener("click", (e) => {
+    historySortAZ = !historySortAZ;
+    e.target.textContent = historySortAZ ? "Newest" : "A–Z";
+    renderHistory();
+  });
+  $("selectAllHistory").addEventListener("change", (e) => {
+    const checked = e.target.checked;
+    for (const cb of document.querySelectorAll(".history-check")) cb.checked = checked;
+    updateRemoveSelectedState();
+  });
+  $("removeSelected").addEventListener("click", async (e) => {
+    const hosts = Array.from(document.querySelectorAll(".history-check:checked")).map((c) => c.dataset.host);
+    if (hosts.length === 0) return;
+    e.target.disabled = true;
+    for (const host of hosts) {
+      await sendMessage({ type: "removeHistory", host });
+    }
+    await refreshHistory();
+  });
+  $("exportHistory").addEventListener("click", async () => {
+    const resp = await sendMessage({ type: "exportHistory" });
+    if (!resp.ok || !resp.blob) { toast("Nothing to export"); return; }
+    downloadJson({ whereech: "history", version: 1, blob: resp.blob }, "whereech-history.json");
+  });
+  $("importHistory").addEventListener("click", () => $("importHistoryFile").click());
+  $("importHistoryFile").addEventListener("change", async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    try {
+      const parsed = await readJsonFile(file);
+      if (!parsed || !parsed.blob) throw new Error("no blob in file");
+      const resp = await sendMessage({ type: "importHistory", blob: parsed.blob });
+      if (!resp.ok) throw new Error(resp.error || "import failed");
+      toast("History imported");
+      await refreshHistory();
+    } catch (err) {
+      toast("Import failed: " + String(err && err.message || err));
+    } finally {
+      e.target.value = "";
+    }
+  });
+
+  // Settings export / import.
+  $("exportSettingsBtn").addEventListener("click", async () => {
+    const resp = await sendMessage({ type: "exportSettings" });
+    if (!resp.ok) { toast("Couldn't export settings"); return; }
+    downloadJson({ whereech: "settings", version: 1, settings: resp.settings }, "whereech-settings.json");
+  });
+  $("importSettingsBtn").addEventListener("click", () => $("importSettingsFile").click());
+  $("importSettingsFile").addEventListener("change", async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    try {
+      const parsed = await readJsonFile(file);
+      if (!parsed || !parsed.settings) throw new Error("no settings in file");
+      const resp = await sendMessage({ type: "importSettings", settings: parsed.settings });
+      if (!resp.ok) throw new Error(resp.error || "import failed");
+      toast("Settings imported");
+      await load();
+    } catch (err) {
+      toast("Import failed: " + String(err && err.message || err));
+    } finally {
+      e.target.value = "";
+    }
+  });
+
+  // What's new.
+  $("whatsNewLink").addEventListener("click", (e) => {
+    e.preventDefault();
+    chrome.runtime.sendMessage({ type: "getChangelog" }, (resp) => {
+      if (chrome.runtime.lastError || !resp || !resp.ok) {
+        // Fallback: open the README on GitHub? No — keep offline. Just toast.
+        toast("Couldn't load changelog");
+        return;
+      }
+      openChangelogModal(resp.text);
+    });
+  });
+
   $("clearCache").addEventListener("click", () => {
     chrome.runtime.sendMessage({ type: "clearCache" }, () => {
       if (chrome.runtime.lastError) toast("Error clearing cache");

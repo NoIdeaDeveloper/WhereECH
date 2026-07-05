@@ -52,12 +52,56 @@
   }
 }
 
+/* Manual theme override. [data-theme] on <html> wins over the media query. */
+html[data-theme="dark"] {
+  --bg: #0b0d12;
+  --surface: #11141b;
+  --surface-2: #161a23;
+  --border: #232834;
+  --border-strong: #2d333f;
+  --fg: #f1f3f7;
+  --fg-2: #c6cad4;
+  --fg-muted: #8a90a0;
+  --green: #4ade80;
+  --green-2: #22c55e;
+  --green-soft: rgba(74,222,128,.14);
+  --amber: #fbbf24;
+  --amber-soft: rgba(251,191,36,.14);
+  --slate: #9ca3af;
+  --slate-soft: rgba(156,163,175,.14);
+  --red: #f87171;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.4);
+  --shadow-md: 0 6px 24px rgba(0,0,0,.5), 0 1px 3px rgba(0,0,0,.4);
+}
+html[data-theme="light"] {
+  --bg: #fbfbfd;
+  --surface: #ffffff;
+  --surface-2: #f4f5f8;
+  --border: #e5e7ec;
+  --border-strong: #d6d9e0;
+  --fg: #0f1115;
+  --fg-2: #3c4250;
+  --fg-muted: #6a7080;
+  --green: #16a34a;
+  --green-2: #15803d;
+  --green-soft: rgba(22,163,74,.10);
+  --amber: #d97706;
+  --amber-soft: rgba(217,119,6,.12);
+  --slate: #6b7280;
+  --slate-soft: rgba(107,114,128,.10);
+  --red: #dc2626;
+  --shadow-sm: 0 1px 2px rgba(15,17,21,.04);
+  --shadow-md: 0 4px 16px rgba(15,17,21,.06), 0 1px 3px rgba(15,17,21,.04);
+}
+
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
 body {
   font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Inter", "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  min-width: 320px;
+  max-width: 420px;
   width: 360px;
   color: var(--fg);
   background: var(--bg);
@@ -270,6 +314,7 @@ main {
 .row:nth-child(7) { animation-delay: .58s; }
 .row:nth-child(8) { animation-delay: .62s; }
 .row:nth-child(9) { animation-delay: .66s; }
+.row:nth-child(10) { animation-delay: .70s; }
 .row:last-child { border-bottom: 0; }
 .row .k {
   color: var(--fg-muted);
@@ -362,4 +407,82 @@ button.small { padding: 5px 10px; font-size: 11px; border-radius: 8px; }
 #copy-rr {
   margin-top: 2px;
   align-self: flex-start;
+}
+
+/* ----- Shortcut hint + What's new ----- */
+.shortcut-hint {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .3px;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 8px;
+  white-space: nowrap;
+  user-select: none;
+}
+.whats-new {
+  display: block;
+  margin: 12px 2px 0;
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-decoration: none;
+  text-align: center;
+  transition: color .15s var(--ease);
+}
+.whats-new:hover { color: var(--green); text-decoration: underline; }
+.whats-new:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; border-radius: 4px; }
+
+.raw-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+/* ----- Changelog modal ----- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15,17,21,.45);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  z-index: 100;
+  animation: rise-in .2s var(--ease) both;
+}
+.modal-dialog {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  max-width: 360px;
+  width: 100%;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-header .icon-btn {
+  font-size: 18px;
+  line-height: 1;
+  width: 24px;
+  height: 24px;
+}
+.modal-pre {
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  font: 11px/1.5 ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg-2);
 }

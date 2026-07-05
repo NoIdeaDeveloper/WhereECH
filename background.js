@@ -38,6 +38,8 @@ import {
   listEchHosts,
   removeEchHost,
   clearEchHistory,
+  getHistoryBlob,
+  importHistoryBlob,
 } from "./history.js";
 
 // How long a successful lookup stays in the in-memory cache. Used to avoid
@@ -76,11 +78,18 @@ const DOH_PROVIDERS = {
 const DEFAULTS = {
   resolver: "cloudflare",
   customResolver: "",
+  customPresets: [],
   nextdnsId: "",
   autoLookup: true,
   traceProbe: false,
   keepHistory: false,
   historyFastPath: false,
+  noCache: false,
+  notifyOnChange: false,
+  allowlist: [],
+  blocklist: [],
+  compareResolvers: false,
+  theme: "system",
 };
 
 // In-memory only. Lives inside this service worker and is wiped whenever
@@ -168,8 +177,23 @@ async function getSettings() {
 
 // Detects raw IP literals so we don't do a useless DNS lookup on them.
 // ECH is a property of a name, so there's nothing to look up for an IP.
+// We handle both IPv4 (dotted-quad) and IPv6 (RFC 4291, including
+// ::-compressed forms and bracketed forms like [::1]). URL.hostname
+// strips brackets, but we accept the colons-containing form explicitly.
+const IPV4_RE = /^(0|[1-9]\d{0,2})(\.(0|[1-9]\d{0,2})){3}$/;
+// IPv6: a single "::" compression marker, hex groups separated by colons,
+// optional trailing IPv4 dotted-quad (RFC 4291 §2.2). Loose but practical.
+const IPV6_RE = /^(([0-9a-fA-F]{1,4}:){0,7}[0-9a-fA-F]{1,4}?)(::?(([0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){0,6}(\d{1,3}\.){3}\d{1,3}))?$/;
 function isIpLiteral(host) {
-  return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(":");
+  if (!host) return false;
+  if (IPV4_RE.test(host)) {
+    // Validate each octet is 0–255.
+    return host.split(".").every((o) => {
+      const n = Number(o);
+      return n >= 0 && n <= 255;
+    });
+  }
+  return IPV6_RE.test(host);
 }
 
 // Gatekeeper: decides whether a URL is even eligible for a lookup. Any URL
@@ -188,6 +212,31 @@ function shouldSkipUrl(url) {
   if (u.hostname === "localhost") return true;
   if (isIpLiteral(u.hostname)) return true;
   return false;
+}
+
+// Per-site list helpers. The allowlist, if non-empty, restricts automatic
+// lookups to ONLY the listed hosts (a positive filter). The blocklist
+// always excludes its entries from automatic lookups (a negative filter).
+// Both are optional and empty by default. Manual lookups (clicking the
+// popup or Re-check) always bypass these filters — the user explicitly
+// asked, so we honor the request regardless.
+//
+// Lists are stored as plain arrays of host strings in chrome.storage.local.
+// They are NOT encrypted: they contain only hosts the user typed in on
+// purpose, not observed-browsing data, so the encryption-at-rest guarantee
+// of the ECH history feature doesn't apply here.
+function listContains(list, host) {
+  if (!Array.isArray(list) || list.length === 0) return false;
+  const h = String(host || "").toLowerCase();
+  return list.some((x) => typeof x === "string" && x.toLowerCase() === h);
+}
+
+function isAutoLookupAllowed(host, settings) {
+  if (listContains(settings.blocklist, host)) return false;
+  if (Array.isArray(settings.allowlist) && settings.allowlist.length > 0) {
+    return listContains(settings.allowlist, host);
+  }
+  return true;
 }
 
 // Turns your Settings into the concrete URL we will fetch for DNS lookups.
@@ -256,15 +305,47 @@ function resolverUrl(settings) {
 //   * 5-second AbortController timeout; 64 KB response size cap.
 
 // Build a minimal DNS query wire message for an HTTPS (type 65) lookup.
-function buildDnsQuery(host) {
+//
+// We also include an OPT pseudo-RR (RFC 6891) carrying an EDNS(0) Padding
+// option (RFC 8467). Padding the query to a uniform target size frustrates
+// traffic analysis based on hostname length: without padding, a passive
+// observer of the DoH request stream can use the request size to fingerprint
+// which site is being looked up, because the DNS query size is roughly
+// proportional to the hostname length. Padding to a power-of-two target
+// (default 256 bytes) collapses many distinct hostname lengths into the
+// same wire size, leaking far less about the query.
+//
+// The PAD option's data field is filled with zero bytes; only the length
+// matters for confidentiality. We never pad the response — that's the
+// resolver's job, and most major DoH providers already do it.
+function buildDnsQuery(host, targetSize = 256) {
   const labels = host.split(".");
   let qnameLen = 1; // root 0x00
   for (const l of labels) qnameLen += 1 + l.length;
-  const buf = new Uint8Array(12 + qnameLen + 4); // header + qname + qtype + qclass
+  const headerLen = 12;
+  const questionLen = qnameLen + 4; // qname + qtype + qclass
+
+  // OPT RR (RFC 6891): name=root(1), type=41(2), class=udp payload size(2),
+  // ttl=extended-rcode+flags(4), rdlen(2), then options.
+  // Padding option (RFC 8467): code=12(2), len(2), padding bytes.
+  // We compute the padding length so the entire message lands on targetSize.
+  const optName = 1;       // root label
+  const optFixed = 10;     // type + class + ttl + rdlen
+  const padOptHeader = 4;  // option-code + option-len
+  const fixedLen = headerLen + questionLen + optName + optFixed + padOptHeader;
+  let padLen = Math.max(0, targetSize - fixedLen);
+  // RFC 8467 recommends the padding be at least enough to reach the target
+  // block size; we cap at the target to avoid unbounded growth on huge hosts.
+  if (padLen > targetSize) padLen = targetSize;
+
+  const buf = new Uint8Array(fixedLen + padLen);
   const view = new DataView(buf.buffer);
   view.setUint16(0, (Math.random() * 0xffff) >>> 0); // random ID (reply-matching only)
   view.setUint16(2, 0x0100); // flags: RD=1
-  view.setUint16(4, 1); // QDCOUNT=1
+  view.setUint16(4, 1);  // QDCOUNT = 1
+  view.setUint16(6, 0);  // ANCOUNT = 0
+  view.setUint16(8, 0);  // NSCOUNT = 0
+  view.setUint16(10, 1); // ARCOUNT = 1 (the OPT RR)
   let off = 12;
   for (const l of labels) {
     buf[off++] = l.length;
@@ -272,7 +353,18 @@ function buildDnsQuery(host) {
   }
   buf[off++] = 0; // root label
   view.setUint16(off, 65); off += 2; // QTYPE=HTTPS
-  view.setUint16(off, 1); // QCLASS=IN
+  view.setUint16(off, 1); off += 2; // QCLASS=IN
+
+  // OPT pseudo-RR (RFC 6891).
+  buf[off++] = 0; // root name
+  view.setUint16(off, 41); off += 2; // TYPE = OPT
+  view.setUint16(off, 1232); off += 2; // CLASS = advertised UDP payload size (RFC 6891 §6.2.3 recommendation)
+  view.setUint32(off, 0); off += 4; // TTL = extended-RCODE(1)+version(1)+flags(2); all zero
+  view.setUint16(off, padOptHeader + padLen); off += 2; // RDLEN = options length
+  // Padding option (RFC 8467): OPTION-CODE=12, OPTION-LENGTH, then padding.
+  view.setUint16(off, 12); off += 2; // OPTION-CODE = Padding
+  view.setUint16(off, padLen); off += 2; // OPTION-LENGTH
+  for (let i = 0; i < padLen; i++) buf[off + i] = 0; // zero padding
   return buf;
 }
 
@@ -373,7 +465,18 @@ async function dohLookupHttpsRR(host, settings) {
 // ECH. It can't tell us whether your browser actually negotiated it.
 // The trace endpoint closes that loop for Cloudflare-hosted sites.
 //
-// Returns { sni } or null if the endpoint is unreachable.
+// Anti-spoofing: any non-Cloudflare origin can serve a path called
+// /cdn-cgi/trace and stuff `sni=encrypted` into the body to falsely
+// claim ECH was used. To prevent that, we require the response to come
+// from Cloudflare by checking for at least one of these headers:
+//   * cf-ray (set on every Cloudflare response, format: <hex>-<airport>)
+//   * server: cloudflare
+// If neither is present, the response is discarded and treated as if
+// the endpoint were unreachable. We also verify the response URL's host
+// matches the host we requested, which protects against DNS-level
+// redirection even though redirects are already refused.
+//
+// Returns { sni } or null if the endpoint is unreachable or unverified.
 async function probeCloudflareTrace(host) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 3000);
@@ -387,6 +490,19 @@ async function probeCloudflareTrace(host) {
       redirect: "error",
     });
     if (!res.ok) return null;
+    // Anti-spoofing: refuse to trust the body unless Cloudflare's own
+    // response headers confirm the request was actually served by
+    // Cloudflare's edge. A non-Cloudflare origin could otherwise forge
+    // an `sni=encrypted` line and falsely mark itself as ECH-confirmed.
+    const cfRay = res.headers.get("cf-ray");
+    const server = (res.headers.get("server") || "").toLowerCase();
+    if (!cfRay && server !== "cloudflare") return null;
+    // Defense in depth: even with redirects refused, verify the response
+    // URL's host matches what we asked for (guards against any future
+    // fetch behavior change or transparent proxy that rewrites hosts).
+    try {
+      if (new URL(res.url).hostname !== host) return null;
+    } catch { return null; }
     // Cloudflare's real /cdn-cgi/trace response is a few hundred bytes.
     // Cap what we'll read so a misbehaving (or compromised) host can't
     // make us buffer an unbounded response into memory. We stream the
@@ -456,11 +572,16 @@ const PIPELINE_TIMEOUT_MS = 15000;
 // on an explicit opt-in you control from Settings. Non-ECH sites and
 // inconclusive lookups are never recorded in history.
 async function evaluateHost(host, { force = false } = {}) {
-  // Step 1: in-memory result cache.
-  const cached = cacheGet(host);
-  if (!force && cached) {
-    const ttl = cached.error ? FAILURE_TTL_MS : SUCCESS_TTL_MS;
-    if (Date.now() - cached.ts < ttl) return cached;
+  // Step 1: in-memory result cache. Bypassed entirely when noCache mode
+  // is enabled, so no result is ever retained between lookups — at the
+  // cost of repeating the DoH query on every visit.
+  const settings = await getSettings();
+  if (!force && !settings.noCache) {
+    const cached = cacheGet(host);
+    if (cached) {
+      const ttl = cached.error ? FAILURE_TTL_MS : SUCCESS_TTL_MS;
+      if (Date.now() - cached.ts < ttl) return cached;
+    }
   }
 
   // Step 2: in-flight deduplication. If a lookup is already running for
@@ -512,8 +633,11 @@ async function performLookup(host, force) {
 
   // History fast-path: O(1) in-memory Set check instead of decrypting the
   // full history blob on every navigation. Bypassed when force=true so
-  // "Re-check" always issues a live DNS query.
-  if (!force && settings.historyFastPath && settings.keepHistory) {
+  // "Re-check" always issues a live DNS query. Also bypassed in noCache
+  // mode — fast-path results are a form of cached state, so a user who
+  // turned on noCache for maximum privacy almost certainly wants a live
+  // query each time.
+  if (!force && !settings.noCache && settings.historyFastPath && settings.keepHistory) {
     const set = await getEchHostSet();
     if (set.has(host)) {
       const histResult = {
@@ -582,7 +706,28 @@ async function performLookup(host, force) {
     }
   }
 
-  cacheSet(host, result);
+  // Multi-resolver comparison: when enabled, fire the same lookup against
+  // every built-in resolver in parallel and attach the per-resolver verdict
+  // to the result. The popup renders discrepancies, which can indicate DNS
+  // manipulation or split-horizon responses. This multiplies the number of
+  // DoH queries per lookup by the number of built-in resolvers (4), so it
+  // is opt-in and off by default.
+  if (settings.compareResolvers && !force) {
+    result.comparisons = await compareResolvers(host).catch(() => []);
+  } else if (settings.compareResolvers && force) {
+    // Re-check should still populate comparisons; force only bypasses cache.
+    result.comparisons = await compareResolvers(host).catch(() => []);
+  }
+
+  // Status-change notification: compare this result against the last cached
+  // status for the host and, if it changed, fire a notification. Gated on an
+  // explicit opt-in to avoid surprising the user.
+  if (settings.notifyOnChange) {
+    maybeNotifyStatusChange(host, result.status, settings).catch(() => {});
+  }
+
+  // Cache the result unless noCache mode is on.
+  if (!settings.noCache) cacheSet(host, result);
 
   if (
     settings.keepHistory &&
@@ -603,6 +748,81 @@ async function performLookup(host, force) {
   }
 
   return result;
+}
+
+// Query every built-in resolver in parallel and report each one's verdict
+// (true if it returned an HTTPS RR with an ECH param, false otherwise).
+// Cloudflare/Quad9/Control D are always queried; NextDNS is only queried
+// if the user has a configured profile ID, since without one the request
+// would fail. The primary resolver's result is intentionally NOT reused
+// here — we issue a fresh query for each resolver so timing and caching
+// differences between providers don't contaminate the comparison.
+async function compareResolvers(host) {
+  const resolvers = ["cloudflare", "quad9", "controld"];
+  const settings = await getSettings();
+  if (settings.nextdnsId && /^[A-Za-z0-9]{1,32}$/.test(settings.nextdnsId)) {
+    resolvers.push("nextdns");
+  }
+  const tasks = resolvers.map(async (name) => {
+    const sub = { ...settings, resolver: name };
+    try {
+      const rrs = await dohLookupHttpsRR(host, sub);
+      let advertised = false;
+      for (const data of rrs) {
+        const rr = parseHttpsRr(data);
+        if (rr && rr.echLength) { advertised = true; break; }
+      }
+      return { resolver: name, status: advertised ? "advertised" : "not_advertised" };
+    } catch (e) {
+      return { resolver: name, status: "error", error: String(e && e.message || e) };
+    }
+  });
+  return Promise.all(tasks);
+}
+
+// Fire a system notification when a site's ECH status changes between
+// lookups. We track the last-seen status in chrome.storage.local under
+// `lastStatus` so it survives service-worker restarts. Only status
+// transitions between {advertised, confirmed, offered, not_advertised,
+// unknown} are notified — a transient CHECKING state never fires a
+// notification.
+async function maybeNotifyStatusChange(host, newStatus, settings) {
+  if (!host || !newStatus) return;
+  // Only notify on the "interesting" transitions; CHECKING, SKIPPED, and
+  // HISTORY (a fast-path replay of a prior result) are not changes.
+  const NOTIFIABLE = new Set([STATUS.ADVERTISED, STATUS.CONFIRMED, STATUS.OFFERED, STATUS.NOT_ADVERTISED]);
+  if (!NOTIFIABLE.has(newStatus)) return;
+  const { lastStatus: stored = {} } = await chrome.storage.local.get({ lastStatus: {} });
+  const prev = stored[host];
+  if (prev === newStatus) return;
+  stored[host] = newStatus;
+  // Cap the map so it can't grow unbounded across many sites.
+  const keys = Object.keys(stored);
+  if (keys.length > 1000) {
+    // Drop the oldest 200 entries (insertion order = first-seen order).
+    for (let i = 0; i < 200 && i < keys.length; i++) delete stored[keys[i]];
+  }
+  await chrome.storage.local.set({ lastStatus: stored });
+  if (!prev) return; // first time we saw this host — no transition to report.
+  const messages = {
+    [STATUS.ADVERTISED]: `${host} now supports ECH`,
+    [STATUS.CONFIRMED]: `${host}: ECH confirmed active`,
+    [STATUS.OFFERED]: `${host}: ECH offered but not negotiated`,
+    [STATUS.NOT_ADVERTISED]: `${host} no longer supports ECH`,
+  };
+  const message = messages[newStatus];
+  if (!message) return;
+  try {
+    await chrome.notifications.create({
+      type: "basic",
+      iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+      title: "WhereECH status changed",
+      message,
+      priority: 0,
+    });
+  } catch {
+    // notifications permission may be missing or denied — fail silently.
+  }
 }
 
 function badgeFor(status) {
@@ -662,6 +882,14 @@ async function handleNavigation(tabId, url) {
     await setBadge(tabId, STATUS.SKIPPED);
     return;
   }
+  // Allowlist/blocklist only affect automatic lookups. A non-empty
+  // allowlist makes WhereECH ignore every host not on it; the blocklist
+  // always excludes its entries. Manual lookups (popup / Re-check) bypass
+  // these filters because the user explicitly asked.
+  if (!isAutoLookupAllowed(host, settings)) {
+    await setBadge(tabId, STATUS.SKIPPED);
+    return;
+  }
   // STATUS.CHECKING shows no badge text (blank icon) while the lookup runs,
   // so the amber "?" only appears when a lookup actually fails — never as a
   // transient loading indicator.
@@ -680,9 +908,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
   // every historyBlob write — which would re-read storage on every navigation
   // to a new ECH site when history is enabled.
   if (Object.keys(changes).some(k => k in DEFAULTS)) cachedSettings = null;
-  if (changes.resolver || changes.customResolver || changes.nextdnsId || changes.traceProbe || changes.historyFastPath || changes.keepHistory) {
+  if (changes.resolver || changes.customResolver || changes.nextdnsId || changes.traceProbe || changes.historyFastPath || changes.keepHistory || changes.noCache || changes.compareResolvers) {
     cache.clear();
   }
+  // Allowlist/blocklist changes don't invalidate cached *results*, but they
+  // do change which hosts are eligible for automatic lookup. No cache clear
+  // needed: the filter is re-evaluated on the next navigation.
 });
 
 // We subscribe ONLY to top-frame navigations (frameId === 0). Iframes,
@@ -772,6 +1003,110 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // "ECH supported" badge after the whole list is wiped.
         cache.clear();
         sendResponse({ ok: true });
+        return;
+      }
+      if (msg && msg.type === "addAllowlist") {
+        if (typeof msg.host !== "string" || !msg.host) {
+          sendResponse({ ok: false, error: "invalid host" });
+          return;
+        }
+        const s = await getSettings();
+        const list = Array.isArray(s.allowlist) ? s.allowlist.slice() : [];
+        if (!list.some(h => h.toLowerCase() === msg.host.toLowerCase())) list.push(msg.host);
+        await chrome.storage.local.set({ allowlist: list });
+        sendResponse({ ok: true, allowlist: list });
+        return;
+      }
+      if (msg && msg.type === "removeAllowlist") {
+        const s = await getSettings();
+        const list = (Array.isArray(s.allowlist) ? s.allowlist : [])
+          .filter(h => typeof h === "string" && h.toLowerCase() !== String(msg.host || "").toLowerCase());
+        await chrome.storage.local.set({ allowlist: list });
+        sendResponse({ ok: true, allowlist: list });
+        return;
+      }
+      if (msg && msg.type === "addBlocklist") {
+        if (typeof msg.host !== "string" || !msg.host) {
+          sendResponse({ ok: false, error: "invalid host" });
+          return;
+        }
+        const s = await getSettings();
+        const list = Array.isArray(s.blocklist) ? s.blocklist.slice() : [];
+        if (!list.some(h => h.toLowerCase() === msg.host.toLowerCase())) list.push(msg.host);
+        await chrome.storage.local.set({ blocklist: list });
+        sendResponse({ ok: true, blocklist: list });
+        return;
+      }
+      if (msg && msg.type === "removeBlocklist") {
+        const s = await getSettings();
+        const list = (Array.isArray(s.blocklist) ? s.blocklist : [])
+          .filter(h => typeof h === "string" && h.toLowerCase() !== String(msg.host || "").toLowerCase());
+        await chrome.storage.local.set({ blocklist: list });
+        sendResponse({ ok: true, blocklist: list });
+        return;
+      }
+      if (msg && msg.type === "exportHistory") {
+        // Return the encrypted blob verbatim so the options page can offer
+        // it as a download. The key is NOT exported — restoring requires the
+        // same browser profile (where the IndexedDB key still lives) or a
+        // fresh decrypt is impossible. This is intentional: exporting the
+        // key would weaken the encryption-at-rest guarantee.
+        const blob = await getHistoryBlob();
+        sendResponse({ ok: true, blob });
+        return;
+      }
+      if (msg && msg.type === "importHistory") {
+        // Replace the current blob with the imported one. Validates shape
+        // and attempts a decrypt before committing, so a corrupt or
+        // wrong-key blob is rejected and the existing history is preserved.
+        try {
+          await importHistoryBlob(msg.blob);
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message || e) });
+          return;
+        }
+        echHostSet = null;
+        echHostSetLoading = null;
+        cache.clear();
+        sendResponse({ ok: true });
+        return;
+      }
+      if (msg && msg.type === "exportSettings") {
+        const s = await getSettings();
+        // Strip sensitive-ish fields we don't want to round-trip. None of
+        // these are secrets, but exporting the encrypted history blob is a
+        // separate, intentional action (exportHistory), and lastStatus is
+        // machine state rather than a preference.
+        const { historyBlob, lastStatus, ...prefs } = s;
+        const full = await chrome.storage.local.get(null);
+        sendResponse({ ok: true, settings: prefs, allKeys: Object.keys(full) });
+        return;
+      }
+      if (msg && msg.type === "importSettings") {
+        if (!msg.settings || typeof msg.settings !== "object") {
+          sendResponse({ ok: false, error: "invalid settings" });
+          return;
+        }
+        // Only accept keys that are in DEFAULTS to prevent an import file
+        // from injecting arbitrary storage keys.
+        const clean = {};
+        for (const k of Object.keys(DEFAULTS)) {
+          if (k in msg.settings) clean[k] = msg.settings[k];
+        }
+        await chrome.storage.local.set(clean);
+        cache.clear();
+        sendResponse({ ok: true });
+        return;
+      }
+      if (msg && msg.type === "getChangelog") {
+        try {
+          const resp = await fetch(chrome.runtime.getURL("CHANGELOG.md"), { cache: "no-store" });
+          if (!resp.ok) throw new Error("no changelog");
+          const text = await resp.text();
+          sendResponse({ ok: true, text });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message || e) });
+        }
         return;
       }
       sendResponse({ ok: false, error: "unknown message" });

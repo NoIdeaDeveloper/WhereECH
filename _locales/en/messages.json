@@ -1,0 +1,62 @@
+{
+  "extName": {
+    "message": "whereECH",
+    "description": "Extension name shown in the toolbar and extensions page."
+  },
+  "extDescription": {
+    "message": "Privacy-respecting indicator showing whether the current site advertises Encrypted Client Hello (ECH) via its DNS HTTPS record.",
+    "description": "Extension description shown on the extensions page and in the web store listing."
+  },
+  "recheckDescription": {
+    "message": "Re-check current site for ECH",
+    "description": "Tooltip / description for the keyboard shortcut command."
+  },
+  "popupRecheck": {
+    "message": "Re-check",
+    "description": "Button label in the popup that re-runs the ECH lookup."
+  },
+  "popupSettings": {
+    "message": "Settings",
+    "description": "Tooltip for the gear icon in the popup header."
+  },
+  "popupCopyHost": {
+    "message": "Copy hostname",
+    "description": "Tooltip for the copy-hostname button in the popup."
+  },
+  "popupCopySummary": {
+    "message": "Copy summary",
+    "description": "Button label that copies a text summary of the lookup result."
+  },
+  "popupWhatsNew": {
+    "message": "What's new",
+    "description": "Link text that opens the in-extension changelog."
+  },
+  "popupShortcutHint": {
+    "message": "Shortcut: Ctrl+Shift+E",
+    "description": "Hint shown near the Re-check button describing the keyboard shortcut."
+  },
+  "statusConfirmed": {
+    "message": "ECH active",
+    "description": "Status label shown when ECH was confirmed in use."
+  },
+  "statusAdvertised": {
+    "message": "ECH supported",
+    "description": "Status label shown when a site advertises an ECH key."
+  },
+  "statusNotAdvertised": {
+    "message": "No ECH",
+    "description": "Status label shown when a site does not advertise ECH."
+  },
+  "statusUnknown": {
+    "message": "Unavailable",
+    "description": "Status label shown when the lookup failed."
+  },
+  "statusChecking": {
+    "message": "Checking…",
+    "description": "Status label shown while a lookup is in flight."
+  },
+  "statusSkipped": {
+    "message": "Not applicable",
+    "description": "Status label shown for non-https or IP-literal pages."
+  }
+}

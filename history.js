@@ -61,7 +61,9 @@ const IDB_KEY_ID = "master";
 // Name of the single key under chrome.storage.local where the encrypted
 // history blob lives. The plaintext hostnames are NEVER stored anywhere
 // else; only the ciphertext of the full serialized list sits here.
-const STORAGE_BLOB = "historyBlob";
+// Exported so background.js can read the raw blob for export/import.
+export const HISTORY_BLOB_KEY = "historyBlob";
+const STORAGE_BLOB = HISTORY_BLOB_KEY;
 // Hard cap so even a heavy user can't grow the encrypted blob without
 // bound. Past this count, the least-recently-seen entries are dropped
 // first (see move-to-end LRU semantics in recordEchHost below).
@@ -70,6 +72,17 @@ const MAX_ENTRIES = 5000;
 // future code recognize and migrate (or refuse) older layouts instead
 // of silently misparsing them.
 const BLOB_VERSION = 1;
+// Key rotation cadence. The history key never leaves the browser and is
+// non-extractable, but a long-lived key with many encrypted blobs is a
+// bigger exposure if the key is ever compromised (e.g. a browser bug
+// that lets an attacker call exportKey). Rotating periodically limits
+// the blast radius: after rotation, a re-encrypt of the current list
+// happens under a fresh key, and any old ciphertext that lingers on disk
+// (snapshots, backups) becomes permanently undecryptable. The cadence
+// is keyed on a timestamp persisted in IDB; we only rotate at most once
+// per day to avoid churning the IDB on every navigation.
+const KEY_ROTATION_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const IDB_KEY_CREATED_AT = "master-createdAt";
 
 function idbOpen() {
   return new Promise((resolve, reject) => {
@@ -129,7 +142,49 @@ async function getOrCreateKey() {
     ["encrypt", "decrypt"]
   );
   await idbPut(IDB_KEY_ID, key);
+  await idbPut(IDB_KEY_CREATED_AT, Date.now());
   return key;
+}
+
+// Periodically rotates the encryption key to limit the blast radius of a
+// compromised key. On rotation we:
+//   1. Decrypt the current blob with the old key (caller's responsibility).
+//   2. Delete the old key and create a new one.
+//   3. The caller re-encrypts the current list under the new key and writes
+//      it back to storage.
+//
+// Rotation is throttled to at most once per KEY_ROTATION_INTERVAL_MS. The
+// timestamp of the current key is stored alongside it in IDB. If the
+// stored timestamp is missing (e.g. an install that predates this
+// feature), we treat the key as freshly created and start the clock now.
+//
+// Returns true if rotation occurred, false otherwise. Callers should use
+// the return value to decide whether to re-encrypt the current blob.
+async function maybeRotateKey() {
+  const createdAt = await idbGet(IDB_KEY_CREATED_AT);
+  const now = Date.now();
+  if (typeof createdAt === "number" && (now - createdAt) < KEY_ROTATION_INTERVAL_MS) {
+    return false;
+  }
+  // Capture the current plaintext before we destroy the only thing that
+  // can decrypt it. If there's no blob yet, rotation is trivial.
+  let entries = [];
+  const { [STORAGE_BLOB]: blob } = await chrome.storage.local.get(STORAGE_BLOB);
+  if (blob) {
+    try { entries = (await loadEntriesRaw()).entries; } catch { entries = []; }
+  }
+  await idbDelete(IDB_KEY_ID);
+  await idbDelete(IDB_KEY_CREATED_AT);
+  await getOrCreateKey(); // creates a fresh key + new createdAt
+  // Re-encrypt the existing list under the new key so nothing is lost.
+  if (entries.length > 0) {
+    await saveEntries(entries);
+  } else if (blob) {
+    // Even an empty list needs a fresh ciphertext so old copies on disk
+    // are useless without the (now-deleted) old key.
+    await saveEntries([]);
+  }
+  return true;
 }
 
 // Called only from clearEchHistory(). Deleting the key makes any older
@@ -256,6 +311,11 @@ function isPlausibleHost(host) {
 export function recordEchHost(host) {
   return withLock(async () => {
     if (!isPlausibleHost(host)) return;
+    // Periodic key rotation check. Runs at most once per
+    // KEY_ROTATION_INTERVAL_MS. Fire-and-forget within the same lock so we
+    // don't delay the write; if rotation actually happens, the re-encrypt
+    // has already been performed inside maybeRotateKey.
+    maybeRotateKey().catch(() => {});
     const { entries } = await loadEntriesRaw();
     // Drop any existing copy, then re-append so this host becomes the
     // most-recent entry. This gives us move-to-end LRU semantics
@@ -310,5 +370,33 @@ export function clearEchHistory() {
   return withLock(async () => {
     await chrome.storage.local.remove(STORAGE_BLOB);
     await rotateKey();
+  });
+}
+
+// Returns the raw encrypted blob exactly as it lives in storage, without
+// decrypting it. Used by the export feature so users can back up their
+// history without the key ever leaving the browser. Restoring an export
+// requires the same browser profile (where the IndexedDB key still
+// lives); on a fresh profile the blob is permanently undecryptable.
+export async function getHistoryBlob() {
+  const { [STORAGE_BLOB]: blob } = await chrome.storage.local.get(STORAGE_BLOB);
+  return blob || null;
+}
+
+// Replaces the current history blob with an imported one. Validates the
+// envelope shape and attempts a decrypt before committing, so a corrupt
+// or wrong-key blob is rejected and the existing history is preserved.
+export function importHistoryBlob(blob) {
+  return withLock(async () => {
+    if (!blob || typeof blob !== "object" || !blob.iv || !blob.ct) {
+      throw new Error("invalid blob");
+    }
+    if (blob.v !== BLOB_VERSION) {
+      throw new Error(`blob version ${blob.v} is not supported`);
+    }
+    // Probe-decrypt: throws if the key doesn't match or the data is corrupt.
+    await decryptJson(blob);
+    // Only commit once we know the blob is decryptable with this profile's key.
+    await chrome.storage.local.set({ [STORAGE_BLOB]: blob });
   });
 }

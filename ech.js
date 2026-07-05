@@ -25,12 +25,24 @@
 //   1. Generic wire format:  `\# 64 0001000001000C0268330268310003...`
 //   2. Presentation format:  `1 . alpn="h3,h2" ipv4hint=1.2.3.4 ech="AEX+..."`
 // We handle both and return a single uniform shape:
-//   { priority, alpn[], port|null, ipv4[], ipv6[], echLength|null, echPublicName|null }
+//   {
+//     priority, alpn[], port|null, ipv4[], ipv6[],
+//     echLength|null, echPublicName|null,
+//     echConfigId|null, echKemId|null, echCipherSuites[]
+//   }
 //
 // echPublicName is the "outer SNI" — the hostname the browser sends to
 // the network during the TLS handshake while the real hostname stays
 // encrypted. Cloudflare always uses "cloudflare-ech.com". A site
 // self-hosting ECH will use its own domain or a different provider's.
+//
+// echConfigId / echKemId / echCipherSuites are the low-level ECHConfig
+// parameters (RFC 9460 §4): config_id is the 1-byte selector the client
+// uses to pick which server key it's using, kem_id identifies the Key
+// Encapsulation Mechanism (e.g. 0x0020 = X25519), and cipher_suites is
+// the list of KDF/AEAD pairs the server will accept. These are surfaced
+// for power users who want to see exactly which ECH parameters a site
+// advertises.
 
 const KEY_ALPN = 1, KEY_PORT = 3, KEY_IPV4 = 4, KEY_ECH = 5, KEY_IPV6 = 6;
 
@@ -53,7 +65,18 @@ function splitEscaped(value) {
 }
 
 function emptySummary(priority = 0) {
-  return { priority, alpn: [], port: null, ipv4: [], ipv6: [], echLength: null, echPublicName: null };
+  return {
+    priority,
+    alpn: [],
+    port: null,
+    ipv4: [],
+    ipv6: [],
+    echLength: null,
+    echPublicName: null,
+    echConfigId: null,
+    echKemId: null,
+    echCipherSuites: [],
+  };
 }
 
 // Parse an ECHConfigList (RFC 9460 §4) and return the public_name of the
@@ -61,6 +84,10 @@ function emptySummary(priority = 0) {
 // is the outer SNI — what the network actually sees — while the real hostname
 // stays encrypted inside the ECH extension. We only need the first entry
 // because all entries in a well-formed list share the same public_name.
+//
+// This function also extracts the config_id, kem_id, and cipher_suites from
+// the first RFC 9460 (version 0xfe0d) entry, returning them alongside the
+// public_name as { publicName, configId, kemId, cipherSuites } or null.
 //
 // ECHConfigList wire layout:
 //   uint16  list_length   (total bytes of what follows)
@@ -76,7 +103,7 @@ function emptySummary(priority = 0) {
 //     uint8   public_name_length  + public_name bytes   ← we want this
 //     uint16  extensions_length   + extension bytes
 //   }
-function parseEchConfigListPublicName(bytes) {
+function parseEchConfigList(bytes) {
   if (bytes.length < 2) return null;
   const listLen = (bytes[0] << 8) | bytes[1];
   if (listLen + 2 > bytes.length) return null;
@@ -91,8 +118,8 @@ function parseEchConfigListPublicName(bytes) {
     const entryEnd = off + entryLen;
 
     if (version === 0xfe0d) {
-      const name = readEchPublicName(bytes, off, entryEnd);
-      if (name) return name;
+      const parsed = readEchConfigContents(bytes, off, entryEnd);
+      if (parsed) return parsed;
     }
     off = entryEnd; // skip unknown version or failed parse
   }
@@ -100,14 +127,17 @@ function parseEchConfigListPublicName(bytes) {
 }
 
 // Walks bytes[off..end) following the ECHConfigContents field layout
-// (RFC 9460 §4) to locate and return the public_name string. Returns
-// null if any length check fails, keeping the caller safe against
-// malformed or deliberately crafted inputs.
-function readEchPublicName(bytes, off, end) {
+// (RFC 9460 §4) to locate and return the public_name string along with
+// config_id, kem_id, and the list of cipher suites. Returns null if any
+// length check fails, keeping the caller safe against malformed or
+// deliberately crafted inputs.
+function readEchConfigContents(bytes, off, end) {
   if (off + 1 > end) return null;
+  const configId = bytes[off];
   off += 1; // config_id (uint8)
 
   if (off + 2 > end) return null;
+  const kemId = (bytes[off] << 8) | bytes[off + 1];
   off += 2; // kem_id (uint16)
 
   if (off + 2 > end) return null;
@@ -120,6 +150,13 @@ function readEchPublicName(bytes, off, end) {
   const csLen = (bytes[off] << 8) | bytes[off + 1];
   off += 2;
   if (off + csLen > end) return null;
+  // Each cipher suite is 4 bytes: uint16 kdf_id + uint16 aead_id.
+  const cipherSuites = [];
+  for (let i = 0; i + 4 <= csLen; i += 4) {
+    const kdf = (bytes[off + i] << 8) | bytes[off + i + 1];
+    const aead = (bytes[off + i + 2] << 8) | bytes[off + i + 3];
+    cipherSuites.push({ kdf, aead });
+  }
   off += csLen; // cipher_suites
 
   if (off + 1 > end) return null;
@@ -129,7 +166,8 @@ function readEchPublicName(bytes, off, end) {
   const nameLen = bytes[off];
   off += 1;
   if (nameLen === 0 || off + nameLen > end) return null;
-  return new TextDecoder().decode(bytes.subarray(off, off + nameLen));
+  const publicName = new TextDecoder().decode(bytes.subarray(off, off + nameLen));
+  return { publicName, configId, kemId, cipherSuites };
 }
 
 function parseWire(data) {
@@ -190,7 +228,13 @@ function parseWire(data) {
       case KEY_ECH:
         if (v.length > 0) {
           out.echLength = v.length;
-          out.echPublicName = parseEchConfigListPublicName(v);
+          const parsed = parseEchConfigList(v);
+          if (parsed) {
+            out.echPublicName = parsed.publicName;
+            out.echConfigId = parsed.configId;
+            out.echKemId = parsed.kemId;
+            out.echCipherSuites = parsed.cipherSuites;
+          }
         }
         break;
     }
@@ -246,7 +290,13 @@ function parsePresentation(data) {
           const u8 = new Uint8Array(raw.length);
           for (let i = 0; i < raw.length; i++) u8[i] = raw.charCodeAt(i);
           out.echLength = u8.length;
-          out.echPublicName = parseEchConfigListPublicName(u8);
+          const parsed = parseEchConfigList(u8);
+          if (parsed) {
+            out.echPublicName = parsed.publicName;
+            out.echConfigId = parsed.configId;
+            out.echKemId = parsed.kemId;
+            out.echCipherSuites = parsed.cipherSuites;
+          }
         } catch {}
         break;
     }

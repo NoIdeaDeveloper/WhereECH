@@ -48,6 +48,9 @@
       <div class="row hidden" id="echname-row" title="The outer hostname your browser shows the network instead of the real site name">
         <span class="k">ECH outer name</span><span class="v" id="echname-v">—</span>
       </div>
+      <div class="row hidden" id="echconfig-row" title="Low-level ECHConfig parameters: config id, KEM, and cipher suites">
+        <span class="k">ECH config</span><span class="v" id="echconfig-v">—</span>
+      </div>
       <div class="row hidden" id="alpn-row" title="Application protocols the site offers (e.g. HTTP/2, HTTP/3)">
         <span class="k">Protocols</span><span class="v" id="alpn-v">—</span>
       </div>
@@ -59,6 +62,9 @@
       </div>
       <div class="row hidden" id="sni-row" title="Result from Cloudflare's /cdn-cgi/trace endpoint">
         <span class="k">Cloudflare says</span><span class="v" id="sni-v">—</span>
+      </div>
+      <div class="row hidden" id="compare-row" title="Per-resolver verdicts from the multi-resolver comparison">
+        <span class="k">Resolvers</span><span class="v" id="compare-v">—</span>
       </div>
 
       <div class="row hidden" id="error-row">
@@ -72,7 +78,10 @@
         <svg class="chev" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
       </summary>
       <pre id="rr"></pre>
-      <button class="ghost small" id="copy-rr" type="button">Copy</button>
+      <div class="raw-actions">
+        <button class="ghost small" id="copy-rr" type="button">Copy</button>
+        <button class="ghost small" id="copy-summary" type="button" title="Copy a text summary of this result">Copy summary</button>
+      </div>
     </details>
 
     <footer class="actions">
@@ -83,7 +92,10 @@
         </svg>
         Re-check
       </button>
+      <div class="shortcut-hint" id="shortcut-hint" title="Assign or change this shortcut at chrome://extensions/shortcuts">Ctrl+Shift+E</div>
     </footer>
+
+    <a href="#" id="whats-new" class="whats-new">What's new</a>
   </main>
   <script src="popup.js"></script>
 </body>

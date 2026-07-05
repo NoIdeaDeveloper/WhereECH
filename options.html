@@ -15,6 +15,12 @@
         </svg>
       </div>
       <h1>WhereECH</h1>
+      <div class="title-actions">
+        <button id="exportSettingsBtn" type="button" class="ghost-small" title="Export settings to a file">Export</button>
+        <button id="importSettingsBtn" type="button" class="ghost-small" title="Import settings from a file">Import</button>
+        <input type="file" id="importSettingsFile" accept="application/json,.json" class="hidden">
+        <a href="#" id="whatsNewLink" class="whats-new-link">What's new</a>
+      </div>
     </div>
     <p class="subtitle">Settings &amp; privacy</p>
     <p class="lede">
@@ -27,6 +33,14 @@
       WhereECH sends <strong>no telemetry, analytics, or browsing data</strong> anywhere — only
       the DNS lookups you configure below.
     </p>
+
+    <section class="card">
+      <h2>Appearance</h2>
+      <p class="hint">Choose how WhereECH looks. System follows your OS dark-mode setting.</p>
+      <label class="opt"><input type="radio" name="theme" value="system"> System <span class="muted">— follow OS setting</span></label>
+      <label class="opt"><input type="radio" name="theme" value="light"> Light</label>
+      <label class="opt"><input type="radio" name="theme" value="dark"> Dark</label>
+    </section>
 
     <section class="card">
       <h2>DNS resolver</h2>
@@ -46,7 +60,17 @@
       <input type="text" id="nextdnsId" aria-label="NextDNS profile ID" placeholder="profile ID, e.g. abc123" autocomplete="off" spellcheck="false" disabled>
       <label class="opt"><input type="radio" name="resolver" value="custom"> Custom — your own DoH endpoint</label>
       <input type="url" id="customResolver" aria-label="Custom DoH resolver URL" placeholder="https://your-resolver.example/dns-query" disabled>
+      <p id="customResolverError" class="hint error-text hidden"></p>
       <p class="hint">Custom resolvers must be HTTPS and support RFC 8484 DNS-over-HTTPS (the standard used by Cloudflare, Quad9, NextDNS, Control D, and most other public DoH providers).</p>
+
+      <div class="presets-row">
+        <label class="muted small" for="presetSelect">Saved presets:</label>
+        <select id="presetSelect" aria-label="Custom resolver presets">
+          <option value="">— choose —</option>
+        </select>
+        <button id="savePreset" type="button" class="ghost-small" title="Save the current custom URL as a preset">Save</button>
+        <button id="deletePreset" type="button" class="ghost-small" title="Delete the selected preset">Delete</button>
+      </div>
     </section>
 
     <section class="card">
@@ -62,6 +86,43 @@
           badge stays neutral until you ask.
         </div>
       </label>
+      <label class="opt">
+        <input type="checkbox" id="noCache">
+        Disable in-memory cache (most private)
+        <div class="hint">
+          On: no lookup result is retained between visits. Every navigation re-queries DNS, so the
+          resolver sees more traffic but nothing about your history lives in memory. Recommended
+          only when you've also turned off automatic lookups or are comfortable with the extra
+          queries.<br>
+          Off (default): results are cached in memory for 10 minutes (30s for failures) so revisits
+          don't trigger a repeat query.
+        </div>
+      </label>
+    </section>
+
+    <section class="card">
+      <h2>Per-site lists <span class="badge">optional</span></h2>
+      <p class="hint">
+        Restrict or exclude specific hosts from <em>automatic</em> lookups. Manual lookups (clicking
+        the popup or Re-check) always bypass these filters — they only apply to the automatic
+        per-navigation lookup.
+      </p>
+      <p class="hint">
+        <strong>Allowlist:</strong> if non-empty, only hosts on this list are auto-looked-up.
+        <strong>Blocklist:</strong> hosts on this list are never auto-looked-up. Both are optional
+        and empty by default. Entries are stored as plain hostnames (not encrypted) — they only
+        contain hosts you typed in on purpose.
+      </p>
+      <div class="list-editor">
+        <input type="text" id="allowlistInput" placeholder="example.com" autocomplete="off" spellcheck="false">
+        <button id="addAllowlist" type="button" class="small">Add to allowlist</button>
+      </div>
+      <ul id="allowlistView" class="host-list" aria-live="polite"></ul>
+      <div class="list-editor">
+        <input type="text" id="blocklistInput" placeholder="example.com" autocomplete="off" spellcheck="false">
+        <button id="addBlocklist" type="button" class="small">Add to blocklist</button>
+      </div>
+      <ul id="blocklistView" class="host-list" aria-live="polite"></ul>
     </section>
 
     <section class="card">
@@ -89,6 +150,35 @@
       <div id="permStatus" class="hint"></div>
     </section>
 
+    <section class="card">
+      <h2>Compare resolvers <span class="badge">optional</span></h2>
+      <p class="hint">
+        When enabled, WhereECH queries every built-in DoH resolver in parallel for each automatic
+        lookup and shows the per-resolver verdict in the popup. Discrepancies (one resolver reports
+        ECH and another doesn't) can indicate DNS manipulation or split-horizon responses.
+      </p>
+      <p class="hint">
+        Cost: multiplies the number of DoH queries per lookup by the number of built-in resolvers
+        (3, or 4 if you've configured NextDNS). Off by default.
+      </p>
+      <label class="opt">
+        <input type="checkbox" id="compareResolvers">
+        Query all built-in resolvers in parallel
+      </label>
+    </section>
+
+    <section class="card">
+      <h2>Status-change notifications <span class="badge">optional</span></h2>
+      <p class="hint">
+        WhereECH can show a system notification when a site you've previously visited starts or
+        stops supporting ECH. The previous status is stored locally per host (just the hostname and
+        its last status — nothing else).
+      </p>
+      <label class="opt">
+        <input type="checkbox" id="notifyOnChange">
+        Notify me when a site's ECH status changes
+      </label>
+    </section>
 
     <section class="card">
       <h2>ECH site history <span class="badge">optional</span></h2>
@@ -104,7 +194,7 @@
         the browser's WebCrypto API. Only this extension's origin can see it. The encrypted list
         itself lives in extension storage; anyone reading the raw profile files sees only opaque
         ciphertext. Clearing the list also rotates the key so old ciphertext becomes permanently
-        undecryptable.
+        undecryptable. The key also rotates automatically every 30 days.
       </p>
       <p class="hint">
         <strong>Caveat.</strong> This protects against casual disk inspection and other extensions,
@@ -127,8 +217,20 @@
         </label>
       </div>
       <div class="history-controls">
+        <input type="search" id="historySearch" placeholder="Filter history…" aria-label="Filter history" autocomplete="off" disabled>
+        <button id="sortHistory" type="button" class="ghost-small" title="Toggle sort order">A–Z</button>
         <button id="refreshHistory" type="button">Refresh</button>
         <button id="clearHistory" type="button" class="danger">Clear entire list</button>
+      </div>
+      <div class="history-actions">
+        <button id="removeSelected" type="button" class="ghost-small" disabled>Remove selected</button>
+        <span class="flex-spacer"></span>
+        <button id="exportHistory" type="button" class="ghost-small">Export</button>
+        <button id="importHistory" type="button" class="ghost-small">Import</button>
+        <input type="file" id="importHistoryFile" accept="application/json,.json" class="hidden">
+      </div>
+      <div class="history-header">
+        <label class="select-all-opt"><input type="checkbox" id="selectAllHistory" disabled> <span id="historyCount">0 entries</span></label>
       </div>
       <ul id="historyList" class="history-list" aria-live="polite"></ul>
       <p id="historyEmpty" class="hint history-empty">No entries yet.</p>
@@ -139,7 +241,7 @@
       <p class="hint">
         WhereECH remembers each site's result for 10 minutes (30 seconds for failed lookups) so it
         doesn't repeat the same DNS query. The cache lives only in memory and is wiped when the
-        browser restarts.
+        browser restarts. (Disabled entirely if "Disable in-memory cache" is on.)
       </p>
       <button id="clearCache" type="button">Clear cache now</button>
     </section>
